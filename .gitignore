@@ -1,0 +1,23 @@
+# 操作系统文件
+.DS_Store
+Thumbs.db
+
+# IDE 文件
+.idea/
+.vscode/
+*.swp
+
+# 依赖
+node_modules/
+vendor/
+venv/
+
+# 构建产物
+build/
+dist/
+*.class
+*.log
+
+# 敏感信息
+.env
+secrets.json
