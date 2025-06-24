@@ -1,315 +1,254 @@
-# 3. 分步骤实现过程
+# 分步骤实现过程
 
-## 3.1 项目初始化和基础配置
+## 🏁 项目初始化和环境搭建
 
-### 步骤 1：创建项目结构
+### 第一步：创建项目结构
 
 ```bash
+# 创建项目目录
 mkdir mini-vite
 cd mini-vite
+
+# 初始化 npm 项目
 npm init -y
+
+# 创建基础目录结构
+mkdir -p src/{core,dev-server,build,plugins,deps,preview,types,utils}
+mkdir -p bin examples docs
 ```
 
-**关键决策**：
-- 使用 npm 作为包管理器
-- 采用标准的 Node.js 项目结构
-- 支持 ES 模块格式
+### 第二步：配置 TypeScript
 
-### 步骤 2：配置 TypeScript
+**安装依赖**
+```bash
+# 核心依赖
+npm install chokidar esbuild rollup ws mime-types magic-string es-module-lexer connect sirv commander
 
+# 开发依赖
+npm install -D typescript @types/node @types/ws @types/mime-types @types/connect jest @types/jest
+```
+
+**配置 tsconfig.json**
 ```json
-// tsconfig.json
 {
   "compilerOptions": {
     "target": "ES2020",
     "module": "ESNext",
     "moduleResolution": "node",
-    "outDir": "./dist",
-    "rootDir": "./src",
-    "strict": true,
+    "allowSyntheticDefaultImports": true,
     "esModuleInterop": true,
-    "skipLibCheck": true,
-    "forceConsistentCasingInFileNames": true,
+    "allowJs": true,
+    "strict": true,
+    "noEmit": false,
     "declaration": true,
-    "declarationMap": true,
-    "sourceMap": true
+    "outDir": "dist",
+    "rootDir": "src"
   },
   "include": ["src/**/*"],
-  "exclude": ["node_modules", "dist", "examples"]
+  "exclude": ["node_modules", "dist"]
 }
 ```
 
-**关键配置说明**：
-- `module: "ESNext"`：输出 ES 模块格式，支持现代模块系统
-- `target: "ES2020"`：支持现代 JavaScript 特性
-- `strict: true`：启用严格类型检查，提高代码质量
-- `declaration: true`：生成类型声明文件，支持 TypeScript 用户
-
-### 步骤 3：安装核心依赖
-
+**配置 package.json**
 ```json
 {
-  "dependencies": {
-    "esbuild": "^0.19.0",      // 高性能代码转换
-    "rollup": "^4.0.0",        // 模块打包工具
-    "chokidar": "^3.5.3",      // 文件监听
-    "ws": "^8.14.0",           // WebSocket 通信
-    "connect": "^3.7.0",       // 服务器框架
-    "sirv": "^2.0.3",          // 静态文件服务
-    "mime-types": "^2.1.35",   // MIME 类型处理
-    "magic-string": "^0.30.0", // 字符串操作
-    "es-module-lexer": "^1.3.0" // ES 模块解析
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "bin": {
+    "mini-vite": "./bin/mini-vite.js"
   },
-  "devDependencies": {
-    "@types/node": "^20.0.0",
-    "@types/ws": "^8.5.0",
-    "@types/mime-types": "^2.1.0",
-    "@types/connect": "^3.4.0",
-    "typescript": "^5.0.0"
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "test": "jest"
   }
 }
 ```
 
-**依赖选择理由**：
-- 每个依赖都有明确的用途和不可替代性
-- 优先选择性能好、维护活跃的库
-- 保持依赖数量的精简
+### 第三步：创建基础类型定义
 
-## 3.2 核心类型定义的设计思路
-
-### 设计原则
-
-1. **接口优先**：先定义接口，再实现功能
-2. **类型安全**：所有公共 API 都有明确的类型定义
-3. **可扩展性**：接口设计考虑未来扩展需求
-4. **一致性**：命名和结构保持一致
-
-### 核心类型设计
-
+**src/types/index.ts**
 ```typescript
-// src/types/index.ts
-
-// 配置系统类型
+// 核心配置接口
 export interface MiniViteConfig {
-  root?: string                    // 项目根目录
-  base?: string                    // 公共基础路径
-  plugins?: Plugin[]               // 插件列表
-  server?: ServerOptions           // 服务器配置
-  build?: BuildOptions             // 构建配置
-  optimizeDeps?: OptimizeDepsOptions // 依赖优化配置
+  root?: string
+  base?: string
+  publicDir?: string
+  build?: BuildOptions
+  server?: ServerOptions
+  plugins?: Plugin[]
+  optimizeDeps?: OptimizeDepsOptions
 }
 
-// 插件系统类型
+// 插件接口
 export interface Plugin {
-  name: string                     // 插件名称
-  // 生命周期钩子
+  name: string
   configResolved?: (config: ResolvedConfig) => void | Promise<void>
-  buildStart?: (opts: any) => void | Promise<void>
+  buildStart?: () => void | Promise<void>
   resolveId?: (id: string, importer?: string) => string | null | Promise<string | null>
   load?: (id: string) => string | null | Promise<string | null>
   transform?: (code: string, id: string) => TransformResult | null | Promise<TransformResult | null>
-  generateBundle?: (opts: any, bundle: any) => void | Promise<void>
-  writeBundle?: (opts: any, bundle: any) => void | Promise<void>
   configureServer?: (server: DevServer) => void | Promise<void>
   handleHotUpdate?: (ctx: HmrContext) => void | Promise<void>
 }
 
-// 模块图类型
-export interface ModuleNode {
-  id: string                       // 模块 ID
-  file: string | null              // 文件路径
-  importers: Set<ModuleNode>       // 导入此模块的模块
-  importedModules: Set<ModuleNode> // 此模块导入的模块
-  acceptedHmrDeps: Set<ModuleNode> // HMR 接受的依赖
-  isSelfAccepting: boolean         // 是否自接受 HMR
-  transformResult: TransformResult | null // 转换结果
-  lastHMRTimestamp: number         // 最后 HMR 时间戳
-}
+// 其他类型定义...
 ```
 
-**设计思考**：
-- **可选属性**：大部分配置都是可选的，提供合理默认值
-- **泛型支持**：在需要的地方使用泛型提高灵活性
-- **联合类型**：使用联合类型表示多种可能的值
-- **接口继承**：通过继承复用公共接口定义
+## 🧱 核心模块逐步实现
 
-## 3.3 配置系统的实现方法
+### 第四步：实现配置系统
 
-### 配置加载流程
-
-```
-查找配置文件 → 加载配置文件 → 合并默认配置 → 解析环境变量 → 调用插件钩子 → 返回最终配置
-```
-
-### 实现要点
-
-**1. 配置文件查找**
+**src/core/config.ts**
 ```typescript
-async function findConfigFile(root: string): Promise<string | null> {
-  const configFiles = [
-    'mini-vite.config.js',
-    'mini-vite.config.ts',
-    'mini-vite.config.mjs',
-  ]
+import { resolve } from 'path'
+import { MiniViteConfig, ResolvedConfig } from '../types/index.js'
+
+// 默认配置
+const DEFAULT_CONFIG: MiniViteConfig = {
+  root: process.cwd(),
+  base: '/',
+  publicDir: 'public',
+  build: {
+    outDir: 'dist',
+    assetsDir: 'assets',
+    sourcemap: false,
+    minify: 'esbuild',
+    target: 'modules'
+  },
+  server: {
+    host: 'localhost',
+    port: 3000,
+    https: false,
+    open: false,
+    cors: true,
+    hmr: true
+  },
+  plugins: [],
+  optimizeDeps: {
+    entries: ['index.html'],
+    exclude: [],
+    include: []
+  }
+}
+
+export async function resolveConfig(
+  inlineConfig: MiniViteConfig = {},
+  command: 'build' | 'serve' = 'serve',
+  mode = 'development'
+): Promise<ResolvedConfig> {
+  // 配置解析逻辑
+  const root = resolve(inlineConfig.root || process.cwd())
   
-  for (const file of configFiles) {
-    const configPath = join(root, file)
-    if (await pathExists(configPath)) {
-      return configPath
-    }
+  // 查找并加载配置文件
+  const configFile = await findConfigFile(root)
+  let fileConfig: MiniViteConfig = {}
+  
+  if (configFile) {
+    fileConfig = await loadConfigFile(configFile)
   }
   
-  return null
+  // 合并配置
+  const mergedConfig = deepMerge(
+    deepMerge(DEFAULT_CONFIG, fileConfig),
+    inlineConfig
+  )
+  
+  // 构建最终配置
+  const resolved: ResolvedConfig = {
+    ...mergedConfig,
+    command,
+    mode,
+    isProduction: command === 'build',
+    root,
+    // ... 其他配置处理
+  }
+  
+  return resolved
 }
 ```
 
-**2. TypeScript 配置文件处理**
+### 第五步：实现日志系统
+
+**src/core/logger.ts**
 ```typescript
-async function loadConfigFile(configPath: string): Promise<MiniViteConfig> {
-  if (configPath.endsWith('.ts')) {
-    // 使用 esbuild 编译 TypeScript 配置文件
-    const { build } = await import('esbuild')
-    const result = await build({
-      entryPoints: [configPath],
-      format: 'esm',
-      platform: 'node',
-      write: false,
-      bundle: true,
-      external: ['esbuild'],
-    })
+import { Logger } from '../types/index.js'
+
+export function createLogger(level = 'info'): Logger {
+  function output(type: 'info' | 'warn' | 'error', msg: string) {
+    const timestamp = new Date().toLocaleTimeString()
+    const prefix = `${timestamp} [mini-vite]`
     
-    const code = result.outputFiles[0].text
-    const dataUrl = `data:text/javascript;base64,${Buffer.from(code).toString('base64')}`
-    const module = await import(dataUrl)
-    return module.default || module
-  }
-  
-  // 直接导入 JS/MJS 文件
-  const module = await import(`file://${configPath}`)
-  return module.default || module
-}
-```
-
-**3. 配置合并策略**
-```typescript
-function deepMerge<T>(target: T, source: Partial<T>): T {
-  const result = { ...target }
-  
-  for (const key in source) {
-    const sourceValue = source[key]
-    const targetValue = result[key]
-    
-    if (isObject(sourceValue) && isObject(targetValue)) {
-      result[key] = deepMerge(targetValue, sourceValue)
-    } else if (sourceValue !== undefined) {
-      result[key] = sourceValue
+    switch (type) {
+      case 'info':
+        console.log(`${prefix} ${msg}`)
+        break
+      case 'warn':
+        console.warn(`${prefix} warning: ${msg}`)
+        break
+      case 'error':
+        console.error(`${prefix} error: ${msg}`)
+        break
     }
   }
   
-  return result
-}
-```
-
-**4. 环境变量处理**
-```typescript
-function loadEnv(mode: string, root: string): Record<string, any> {
-  const env: Record<string, any> = {}
-  
-  const envFiles = [
-    `.env`,
-    `.env.local`,
-    `.env.${mode}`,
-    `.env.${mode}.local`,
-  ]
-  
-  for (const file of envFiles) {
-    const envPath = join(root, file)
-    try {
-      const content = fs.readFileSync(envPath, 'utf-8')
-      // 解析环境变量
-      parseEnvFile(content, env)
-    } catch {
-      // 文件不存在，忽略
-    }
+  return {
+    info: (msg: string) => output('info', msg),
+    warn: (msg: string) => output('warn', msg),
+    error: (msg: string) => output('error', msg),
+    clearScreen: () => console.clear()
   }
-  
-  return env
 }
 ```
 
-## 3.4 模块图和依赖管理的构建
+### 第六步：实现模块图
 
-### 模块图的作用
-
-1. **依赖跟踪**：记录模块间的依赖关系
-2. **HMR 支持**：确定热更新的影响范围
-3. **缓存管理**：避免重复转换相同模块
-4. **循环依赖检测**：发现和处理循环依赖
-
-### 实现核心逻辑
-
+**src/core/moduleGraph.ts**
 ```typescript
+import { ModuleGraph, ModuleNode } from '../types/index.js'
+
+export class ModuleNodeImpl implements ModuleNode {
+  id: string
+  file: string | null = null
+  importers = new Set<ModuleNode>()
+  importedModules = new Set<ModuleNode>()
+  acceptedHmrDeps = new Set<ModuleNode>()
+  isSelfAccepting = false
+  transformResult: any = null
+  lastHMRTimestamp = 0
+
+  constructor(id: string) {
+    this.id = id
+  }
+}
+
 export class ModuleGraphImpl implements ModuleGraph {
-  private urlToModuleMap = new Map<string, ModuleNode>()
-  private idToModuleMap = new Map<string, ModuleNode>()
-  private fileToModulesMap = new Map<string, Set<ModuleNode>>()
+  urlToModuleMap = new Map<string, ModuleNode>()
+  idToModuleMap = new Map<string, ModuleNode>()
+  fileToModulesMap = new Map<string, Set<ModuleNode>>()
 
-  ensureEntryFromUrl(rawUrl: string): ModuleNode {
+  getModuleByUrl(rawUrl: string): ModuleNode | undefined {
     const url = cleanUrl(rawUrl)
-    let mod = this.urlToModuleMap.get(url)
-    
-    if (!mod) {
-      mod = new ModuleNodeImpl(url)
-      this.urlToModuleMap.set(url, mod)
-      this.idToModuleMap.set(url, mod)
-      
-      // 建立文件到模块的映射
-      if (url.startsWith('/')) {
-        const file = normalizePath(url)
-        let fileMods = this.fileToModulesMap.get(file)
-        if (!fileMods) {
-          fileMods = new Set()
-          this.fileToModulesMap.set(file, fileMods)
-        }
-        fileMods.add(mod)
-        mod.file = file
-      }
-    }
-    
-    return mod
+    return this.urlToModuleMap.get(url)
   }
 
-  updateModuleInfo(mod: ModuleNode, importedModules: Set<string | ModuleNode>): void {
-    const prevImports = mod.importedModules
-    const nextImports = new Set<ModuleNode>()
-
-    // 处理新的导入
-    for (const imported of importedModules) {
-      const dep = typeof imported === 'string' 
-        ? this.ensureEntryFromUrl(imported)
-        : imported
-      
-      dep.importers.add(mod)
-      nextImports.add(dep)
+  onFileChange(file: string): void {
+    const mods = this.getModulesByFile(file)
+    if (mods) {
+      const timestamp = Date.now()
+      mods.forEach(mod => {
+        this.invalidateModule(mod)
+        mod.lastHMRTimestamp = timestamp
+      })
     }
-
-    // 清理旧的导入关系
-    prevImports.forEach(dep => {
-      if (!nextImports.has(dep)) {
-        dep.importers.delete(mod)
-      }
-    })
-
-    mod.importedModules = nextImports
   }
 
   invalidateModule(mod: ModuleNode): void {
-    // 清除转换结果
     mod.transformResult = null
-    
     // 递归失效依赖此模块的模块
     mod.importers.forEach(importer => {
-      if (!importer.acceptedHmrDeps.has(mod) && !importer.isSelfAccepting) {
+      if (!importer.acceptedHmrDeps.has(mod)) {
         this.invalidateModule(importer)
       }
     })
@@ -317,69 +256,423 @@ export class ModuleGraphImpl implements ModuleGraph {
 }
 ```
 
-**关键设计点**：
-- **双向映射**：URL → 模块、文件 → 模块
-- **依赖关系维护**：自动维护导入者和被导入者的关系
-- **内存管理**：及时清理不再需要的依赖关系
-- **HMR 支持**：为热更新提供必要的依赖信息
+## 🔗 功能集成和测试
 
-## 3.5 工具函数的设计
+### 第七步：实现插件系统
 
-### 路径处理工具
-
+**src/dev-server/pluginContainer.ts**
 ```typescript
-export function normalizePath(id: string): string {
-  return id.replace(/\\/g, '/')
-}
+import { Plugin, ResolvedConfig, ModuleGraph } from '../types/index.js'
 
-export function cleanUrl(url: string): string {
-  return url.replace(/[?#].*$/, '')
-}
+export class PluginContainer {
+  private plugins: Plugin[]
+  
+  constructor(
+    private config: ResolvedConfig,
+    private moduleGraph: ModuleGraph
+  ) {
+    this.plugins = config.plugins
+  }
 
-export function isAbsolute(path: string): boolean {
-  return path.startsWith('/') || /^[a-zA-Z]:/.test(path)
+  async resolveId(id: string, importer?: string): Promise<string | null> {
+    for (const plugin of this.plugins) {
+      if (plugin.resolveId) {
+        const result = await plugin.resolveId(id, importer)
+        if (result) return result
+      }
+    }
+    return null
+  }
+
+  async load(id: string): Promise<string | null> {
+    for (const plugin of this.plugins) {
+      if (plugin.load) {
+        const result = await plugin.load(id)
+        if (result) return result
+      }
+    }
+    return null
+  }
+
+  async transform(code: string, id: string): Promise<TransformResult | null> {
+    let result = { code, map: null }
+    
+    for (const plugin of this.plugins) {
+      if (plugin.transform) {
+        const transformResult = await plugin.transform(result.code, id)
+        if (transformResult) {
+          result = transformResult
+        }
+      }
+    }
+    
+    return result
+  }
 }
 ```
 
-### 文件系统工具
+### 第八步：实现内置插件
 
+**src/plugins/esbuild.ts**
 ```typescript
-export async function ensureDir(dir: string): Promise<void> {
-  try {
-    await fs.mkdir(dir, { recursive: true })
-  } catch (error: any) {
-    if (error.code !== 'EEXIST') {
-      throw error
+import { transform } from 'esbuild'
+import { Plugin } from '../types/index.js'
+
+export function esbuildPlugin(): Plugin {
+  return {
+    name: 'esbuild',
+    async transform(code: string, id: string) {
+      if (!/\.(tsx?|jsx?)$/.test(id)) return null
+      
+      try {
+        const result = await transform(code, {
+          loader: id.endsWith('.tsx') ? 'tsx' : 
+                 id.endsWith('.ts') ? 'ts' :
+                 id.endsWith('.jsx') ? 'jsx' : 'js',
+          target: 'es2020',
+          format: 'esm',
+          sourcemap: true
+        })
+        
+        return {
+          code: result.code,
+          map: result.map
+        }
+      } catch (error) {
+        throw new Error(`esbuild transform failed: ${error.message}`)
+      }
     }
   }
 }
+```
 
-export async function pathExists(path: string): Promise<boolean> {
-  try {
-    await fs.access(path)
-    return true
-  } catch {
-    return false
+**src/plugins/css.ts**
+```typescript
+import { Plugin } from '../types/index.js'
+
+export function cssPlugin(): Plugin {
+  return {
+    name: 'css',
+    async transform(code: string, id: string) {
+      if (!id.endsWith('.css')) return null
+      
+      // 将 CSS 转换为 JS 模块
+      const cssCode = `
+const css = ${JSON.stringify(code)}
+const style = document.createElement('style')
+style.textContent = css
+document.head.appendChild(style)
+export default css
+`
+      
+      return {
+        code: cssCode,
+        map: null
+      }
+    }
   }
 }
 ```
 
-### 模块类型判断
+### 第九步：实现开发服务器
 
+**src/dev-server/index.ts**
 ```typescript
-export function isJSRequest(url: string): boolean {
-  const cleanedUrl = cleanUrl(url)
-  return /\.(js|ts|jsx|tsx)$/.test(cleanedUrl) || !cleanedUrl.includes('.')
+import connect from 'connect'
+import { createServer } from 'http'
+import { WebSocketServer } from 'ws'
+import { ResolvedConfig, DevServer } from '../types/index.js'
+import { ModuleGraphImpl } from '../core/moduleGraph.js'
+import { PluginContainer } from './pluginContainer.js'
+
+export async function createDevServer(config: ResolvedConfig): Promise<DevServer> {
+  const middlewares = connect()
+  const moduleGraph = new ModuleGraphImpl()
+  const pluginContainer = new PluginContainer(config, moduleGraph)
+  
+  // 创建 WebSocket 服务器用于 HMR
+  const ws = new WebSocketServer({ port: 3001 })
+  
+  // 添加中间件
+  middlewares.use(async (req, res, next) => {
+    const url = req.url!
+    
+    // 处理模块请求
+    if (url.startsWith('/@modules/') || url.endsWith('.js') || url.endsWith('.ts')) {
+      try {
+        const result = await transformRequest(url, pluginContainer, moduleGraph)
+        res.setHeader('Content-Type', 'application/javascript')
+        res.end(result.code)
+      } catch (error) {
+        res.statusCode = 500
+        res.end(error.message)
+      }
+    } else {
+      next()
+    }
+  })
+  
+  const server: DevServer = {
+    config,
+    middlewares,
+    ws,
+    moduleGraph,
+    
+    async listen(port = 3000) {
+      const httpServer = createServer(middlewares)
+      
+      return new Promise((resolve) => {
+        httpServer.listen(port, () => {
+          config.logger.info(`Dev server running at http://localhost:${port}`)
+          resolve(server)
+        })
+      })
+    },
+    
+    async close() {
+      ws.close()
+    }
+  }
+  
+  return server
 }
 
-export function isCSSRequest(url: string): boolean {
-  return cleanUrl(url).endsWith('.css')
-}
-
-export function isStaticAsset(id: string): boolean {
-  const ext = extname(cleanUrl(id))
-  return ['.png', '.jpg', '.jpeg', '.gif', '.svg', '.ico'].includes(ext)
+async function transformRequest(
+  url: string,
+  pluginContainer: PluginContainer,
+  moduleGraph: ModuleGraph
+) {
+  // 解析模块 ID
+  const id = await pluginContainer.resolveId(url)
+  if (!id) throw new Error(`Cannot resolve module: ${url}`)
+  
+  // 加载模块内容
+  const loadResult = await pluginContainer.load(id)
+  if (!loadResult) throw new Error(`Cannot load module: ${id}`)
+  
+  // 转换模块
+  const transformResult = await pluginContainer.transform(loadResult, id)
+  
+  return transformResult || { code: loadResult, map: null }
 }
 ```
 
-这些基础设施为后续的功能实现提供了坚实的基础，确保了代码的可维护性和扩展性。
+### 第十步：实现热更新系统
+
+**src/dev-server/hmr.ts**
+```typescript
+import chokidar from 'chokidar'
+import { WebSocketServer } from 'ws'
+import { DevServer } from '../types/index.js'
+
+export function createHMRServer(port: number) {
+  const ws = new WebSocketServer({ port })
+  
+  function handleConnection(socket: any, server: DevServer) {
+    // 文件监听
+    const watcher = chokidar.watch(server.config.root, {
+      ignored: ['**/node_modules/**', '**/.git/**'],
+      ignoreInitial: true
+    })
+    
+    watcher.on('change', async (file) => {
+      server.config.logger.info(`File changed: ${file}`)
+      
+      // 更新模块图
+      server.moduleGraph.onFileChange(file)
+      
+      // 发送热更新消息
+      socket.send(JSON.stringify({
+        type: 'update',
+        updates: [{
+          type: 'js-update',
+          path: file,
+          timestamp: Date.now()
+        }]
+      }))
+    })
+    
+    socket.on('close', () => {
+      watcher.close()
+    })
+  }
+  
+  return { ws, handleConnection }
+}
+```
+
+## 📦 打包和发布准备
+
+### 第十一步：实现构建系统
+
+**src/build/index.ts**
+```typescript
+import { rollup } from 'rollup'
+import { ResolvedConfig } from '../types/index.js'
+
+export async function build(config: ResolvedConfig) {
+  config.logger.info('Building for production...')
+  
+  try {
+    // 创建 Rollup 构建
+    const bundle = await rollup({
+      input: 'src/main.js', // 入口文件
+      plugins: [
+        // Rollup 插件
+      ]
+    })
+    
+    // 生成输出
+    await bundle.write({
+      dir: config.build.outDir,
+      format: 'es',
+      sourcemap: config.build.sourcemap
+    })
+    
+    config.logger.info('Build completed!')
+  } catch (error) {
+    config.logger.error(`Build failed: ${error.message}`)
+    throw error
+  }
+}
+```
+
+### 第十二步：创建 CLI 工具
+
+**bin/mini-vite.js**
+```javascript
+#!/usr/bin/env node
+
+import { program } from 'commander'
+import { createDevServer, build, resolveConfig } from '../dist/index.js'
+
+program
+  .command('dev')
+  .description('Start development server')
+  .option('-p, --port <port>', 'Port number', '3000')
+  .option('-h, --host <host>', 'Host name', 'localhost')
+  .action(async (options) => {
+    const config = await resolveConfig({
+      server: {
+        port: parseInt(options.port),
+        host: options.host
+      }
+    }, 'serve')
+    
+    const server = await createDevServer(config)
+    await server.listen()
+  })
+
+program
+  .command('build')
+  .description('Build for production')
+  .action(async () => {
+    const config = await resolveConfig({}, 'build')
+    await build(config)
+  })
+
+program.parse()
+```
+
+### 第十三步：添加测试
+
+**tests/config.test.ts**
+```typescript
+import { resolveConfig } from '../src/core/config'
+
+describe('Config Resolution', () => {
+  test('should resolve default config', async () => {
+    const config = await resolveConfig()
+    
+    expect(config.root).toBeDefined()
+    expect(config.base).toBe('/')
+    expect(config.server.port).toBe(3000)
+  })
+  
+  test('should merge inline config', async () => {
+    const config = await resolveConfig({
+      server: { port: 4000 }
+    })
+    
+    expect(config.server.port).toBe(4000)
+  })
+})
+```
+
+### 第十四步：完善文档
+
+**创建示例项目**
+```bash
+mkdir examples/basic
+cd examples/basic
+
+# 创建示例文件
+echo '<div id="app"></div>' > index.html
+echo 'console.log("Hello Mini Vite!")' > main.js
+```
+
+**更新 README.md**
+```markdown
+# Mini Vite
+
+A lightweight Vite-like build tool.
+
+## Quick Start
+
+```bash
+npm install -g mini-vite
+mini-vite dev
+```
+
+## Features
+
+- Fast development server
+- Hot Module Replacement
+- TypeScript support
+- Plugin system
+```
+
+## 🎯 实现检查清单
+
+### 核心功能 ✅
+- [ ] 项目初始化和配置
+- [ ] TypeScript 环境搭建
+- [ ] 核心类型定义
+- [ ] 配置系统实现
+- [ ] 日志系统实现
+- [ ] 模块图实现
+
+### 开发服务器 ✅
+- [ ] 基础服务器框架
+- [ ] 插件容器实现
+- [ ] 内置插件开发
+- [ ] 中间件系统
+- [ ] 模块转换流程
+
+### 热更新系统 ✅
+- [ ] WebSocket 服务器
+- [ ] 文件监听机制
+- [ ] 更新消息推送
+- [ ] 客户端集成
+
+### 构建系统 ✅
+- [ ] Rollup 集成
+- [ ] 生产构建流程
+- [ ] 资源优化处理
+- [ ] 输出文件生成
+
+### 工具和测试 ✅
+- [ ] CLI 工具开发
+- [ ] 单元测试编写
+- [ ] 示例项目创建
+- [ ] 文档完善
+
+## 🚀 下一步
+
+完成基础实现后，您可以：
+
+1. **[深入学习技术原理](./04-technical-deep-dive.md)** - 理解核心机制
+2. **[解决实际问题](./05-challenges-solutions.md)** - 处理开发中的挑战
+3. **[优化和扩展](./06-best-practices.md)** - 提升代码质量
+
+让我们继续深入探索这些技术细节！🔍

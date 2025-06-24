@@ -1,283 +1,389 @@
-# 2. 技术选型与架构决策
+# 技术选型与架构决策
 
-## 2.1 核心技术栈
+## 🛠️ 核心技术栈
 
-### TypeScript - 类型安全的开发体验
+### 运行时环境
 
-**选择理由**：
-- **类型安全**：编译时发现错误，减少运行时问题
-- **更好的 IDE 支持**：智能提示、重构、导航
-- **代码可维护性**：清晰的接口定义和类型约束
-- **团队协作**：统一的代码规范和接口契约
+**Node.js + TypeScript**
+- **选择理由**: 
+  - Node.js 提供了丰富的文件系统和网络 API
+  - TypeScript 提供类型安全和更好的开发体验
+  - 与前端技术栈保持一致，降低学习成本
 
-**在项目中的应用**：
-```typescript
-// 清晰的接口定义
-interface Plugin {
-  name: string
-  transform?: (code: string, id: string) => TransformResult | null
-  load?: (id: string) => string | null
-}
+- **版本要求**: Node.js 16+ (支持 ES 模块)
+- **配置**: 使用 ES 模块 (`"type": "module"`)
 
-// 类型安全的配置
-interface MiniViteConfig {
-  root?: string
-  plugins?: Plugin[]
-  server?: ServerOptions
-}
-```
+### 开发服务器
 
-**最佳实践**：
-- 使用严格模式 (`strict: true`)
-- 定义完整的类型接口
-- 避免使用 `any` 类型
-- 利用泛型提高代码复用性
+**Connect + 自定义中间件**
+```javascript
+import connect from 'connect'
 
-### esbuild - 极速代码转换
-
-**选择理由**：
-- **性能极佳**：Go 语言编写，比传统工具快 10-100 倍
-- **功能完整**：支持 TypeScript、JSX、ES6+ 转换
-- **零配置**：开箱即用的转换能力
-- **体积小巧**：不会显著增加项目大小
-
-**应用场景**：
-- TypeScript/JSX 代码转换
-- 依赖预构建
-- 生产环境代码压缩
-- 配置文件编译
-
-**配置示例**：
-```typescript
-await transform(code, {
-  loader: 'ts',
-  target: 'es2020',
-  format: 'esm',
-  sourcemap: true,
-  jsx: 'transform',
-})
-```
-
-### Rollup - 高效的模块打包
-
-**选择理由**：
-- **ES 模块优先**：原生支持 ES 模块，Tree Shaking 效果好
-- **插件生态**：丰富的插件系统
-- **代码分割**：智能的代码分割策略
-- **输出质量**：生成的代码简洁高效
-
-**与 Webpack 的对比**：
-| 特性 | Rollup | Webpack |
-|------|--------|---------|
-| 主要用途 | 库和应用构建 | 复杂应用开发 |
-| ES 模块支持 | 原生支持 | 需要配置 |
-| Tree Shaking | 效果更好 | 支持但复杂 |
-| 输出代码 | 简洁高效 | 包含运行时 |
-| 配置复杂度 | 相对简单 | 较为复杂 |
-
-**使用示例**：
-```typescript
-const bundle = await rollup({
-  input: 'src/main.js',
-  plugins: [
-    // 自定义插件
-  ],
-  external: ['lodash'],
-})
-```
-
-### chokidar - 可靠的文件监听
-
-**选择理由**：
-- **跨平台兼容**：统一的文件监听 API
-- **性能优化**：高效的文件变更检测
-- **功能丰富**：支持忽略模式、递归监听等
-- **稳定可靠**：被广泛使用，bug 较少
-
-**核心功能**：
-```typescript
-const watcher = chokidar.watch('src/**/*', {
-  ignored: ['**/node_modules/**', '**/.git/**'],
-  ignoreInitial: true,
-})
-
-watcher.on('change', (path) => {
-  console.log(`File ${path} has been changed`)
-})
-```
-
-### Connect - 轻量级的服务器框架
-
-**选择理由**：
-- **中间件架构**：灵活的请求处理流程
-- **轻量级**：相比 Express 更简洁
-- **可扩展**：易于添加自定义中间件
-- **性能好**：适合开发服务器场景
-
-**中间件示例**：
-```typescript
 const app = connect()
-
-app.use('/api', (req, res, next) => {
-  // API 处理逻辑
-  next()
-})
-
+app.use('/api', apiMiddleware)
 app.use(staticMiddleware)
 ```
 
-### WebSocket (ws) - 实时通信
+- **选择理由**:
+  - 轻量级，专注于中间件功能
+  - 灵活的中间件架构
+  - 易于扩展和定制
+  - 性能优秀，内存占用小
 
-**选择理由**：
-- **实时性**：支持双向实时通信
-- **轻量级**：简单易用的 API
-- **性能好**：高效的消息传递
-- **标准化**：基于 WebSocket 标准
+- **替代方案对比**:
+  - Express: 功能过于丰富，不需要路由等功能
+  - Koa: 基于 async/await，但 Connect 更简单直接
+  - 原生 http: 需要自己实现中间件系统
 
-**HMR 通信示例**：
-```typescript
-const wss = new WebSocketServer({ port: 3001 })
+### 代码转换
 
-wss.on('connection', (ws) => {
-  ws.send(JSON.stringify({
-    type: 'connected'
-  }))
+**esbuild**
+```javascript
+import { transform } from 'esbuild'
+
+const result = await transform(code, {
+  loader: 'tsx',
+  target: 'es2020',
+  format: 'esm'
 })
 ```
 
-## 2.2 架构设计原则
+- **选择理由**:
+  - 极快的转换速度 (Go 语言实现)
+  - 内置 TypeScript/JSX 支持
+  - 零配置，开箱即用
+  - 支持 ES 模块输出
 
-### 模块化设计
+- **性能对比**:
+  - esbuild: ~10ms (TypeScript → JavaScript)
+  - Babel: ~100ms (相同转换)
+  - TypeScript Compiler: ~200ms
 
-**目录结构**：
+### 生产构建
+
+**Rollup**
+```javascript
+import { rollup } from 'rollup'
+
+const bundle = await rollup({
+  input: 'src/main.js',
+  plugins: [/* ... */]
+})
+```
+
+- **选择理由**:
+  - 专为 ES 模块设计
+  - 优秀的 Tree Shaking
+  - 丰富的插件生态
+  - 输出代码质量高
+
+- **与其他工具对比**:
+  - Webpack: 更适合复杂应用，配置复杂
+  - Parcel: 零配置但定制性差
+  - esbuild: 速度快但功能相对简单
+
+### 文件监听
+
+**chokidar**
+```javascript
+import chokidar from 'chokidar'
+
+const watcher = chokidar.watch('src/**/*')
+watcher.on('change', handleFileChange)
+```
+
+- **选择理由**:
+  - 跨平台兼容性好
+  - 高性能，低 CPU 占用
+  - 丰富的事件类型
+  - 稳定可靠，广泛使用
+
+### WebSocket 通信
+
+**ws**
+```javascript
+import { WebSocketServer } from 'ws'
+
+const wss = new WebSocketServer({ port: 3001 })
+wss.on('connection', handleConnection)
+```
+
+- **选择理由**:
+  - 轻量级，专注于 WebSocket 功能
+  - 性能优秀
+  - API 简单易用
+  - 支持自定义协议
+
+### 静态文件服务
+
+**sirv**
+```javascript
+import sirv from 'sirv'
+
+const serve = sirv('public', {
+  dev: true,
+  etag: true
+})
+```
+
+- **选择理由**:
+  - 高性能静态文件服务
+  - 支持 HTTP 缓存
+  - 轻量级实现
+  - 开发友好的选项
+
+## 🏗️ 架构设计原则
+
+### 1. 模块化设计
+
+**单一职责原则**
 ```
 src/
-├── core/           # 核心功能模块
-│   ├── config.ts   # 配置管理
-│   ├── logger.ts   # 日志系统
-│   └── moduleGraph.ts # 模块依赖图
-├── dev-server/     # 开发服务器模块
-│   ├── index.ts    # 服务器主逻辑
-│   ├── hmr.ts      # 热更新实现
-│   └── pluginContainer.ts # 插件容器
-├── build/          # 构建系统模块
-├── plugins/        # 插件系统模块
-├── deps/           # 依赖优化模块
-└── utils/          # 工具函数模块
+├── core/           # 核心功能 (配置、日志、模块图)
+├── dev-server/     # 开发服务器
+├── build/          # 构建系统
+├── plugins/        # 插件系统
+├── deps/           # 依赖优化
+└── utils/          # 工具函数
 ```
 
-**设计优势**：
-- **职责清晰**：每个模块负责特定功能
-- **易于测试**：可以独立测试各个模块
-- **便于维护**：修改某个功能不影响其他模块
-- **可复用性**：模块可以在不同场景下复用
+每个模块都有明确的职责边界，便于维护和测试。
 
-### 插件驱动架构
+### 2. 插件驱动架构
 
-**插件接口设计**：
+**钩子函数设计**
 ```typescript
 interface Plugin {
   name: string
-  // 配置阶段
   configResolved?: (config: ResolvedConfig) => void
-  // 构建阶段
-  buildStart?: (opts: any) => void
-  resolveId?: (id: string, importer?: string) => string | null
+  buildStart?: () => void
+  resolveId?: (id: string) => string | null
   load?: (id: string) => string | null
-  transform?: (code: string, id: string) => TransformResult | null
-  // 生成阶段
-  generateBundle?: (opts: any, bundle: any) => void
-  writeBundle?: (opts: any, bundle: any) => void
-  // 开发服务器
-  configureServer?: (server: DevServer) => void
-  handleHotUpdate?: (ctx: HmrContext) => void
+  transform?: (code: string, id: string) => TransformResult
 }
 ```
 
-**架构优势**：
-- **可扩展性**：通过插件添加新功能
-- **解耦合**：核心功能与扩展功能分离
-- **标准化**：统一的插件接口和生命周期
-- **生态建设**：便于第三方插件开发
+- 统一的插件接口
+- 丰富的生命周期钩子
+- 异步插件支持
+- 插件间通信机制
 
-### 配置驱动设计
+### 3. 中间件模式
 
-**配置层次结构**：
+**请求处理流水线**
+```javascript
+// 中间件注册顺序
+app.use(corsMiddleware)        // CORS 处理
+app.use(hmrMiddleware)         // HMR 通信
+app.use(transformMiddleware)   // 模块转换
+app.use(staticMiddleware)      // 静态文件
 ```
-用户配置 → 默认配置 → 环境变量 → 插件配置 → 最终配置
-```
 
-**配置合并策略**：
+每个中间件处理特定类型的请求，形成处理链。
+
+### 4. 依赖注入
+
+**配置和服务注入**
 ```typescript
-function deepMerge<T>(target: T, source: Partial<T>): T {
-  // 深度合并逻辑
-  // 处理对象、数组、基本类型
-  // 保持类型安全
+class DevServer {
+  constructor(
+    private config: ResolvedConfig,
+    private moduleGraph: ModuleGraph,
+    private pluginContainer: PluginContainer
+  ) {}
 }
 ```
 
-## 2.3 技术选型对比
+通过依赖注入提高模块间的解耦和可测试性。
 
-### 代码转换工具对比
+## ⚖️ 技术选型对比
 
-| 工具 | 性能 | 功能 | 生态 | 学习成本 |
-|------|------|------|------|----------|
-| esbuild | 极快 | 基础完整 | 较新 | 低 |
-| Babel | 较慢 | 功能丰富 | 成熟 | 高 |
-| SWC | 很快 | 功能完整 | 发展中 | 中 |
+### 开发服务器对比
 
-**选择 esbuild 的原因**：
-- 性能是最大优势，符合快速开发的需求
-- 功能足够满足基本的转换需求
-- 配置简单，降低复杂度
+| 方案 | 优点 | 缺点 | 适用场景 |
+|------|------|------|----------|
+| **Connect** | 轻量、灵活、中间件丰富 | 功能相对简单 | ✅ 构建工具 |
+| Express | 功能完整、生态丰富 | 体积大、功能冗余 | Web 应用 |
+| Fastify | 性能极佳、类型友好 | 学习成本高 | 高性能 API |
+| Koa | 现代语法、洋葱模型 | 生态相对较小 | 现代 Web 应用 |
 
-### 打包工具对比
+### 代码转换对比
 
-| 工具 | 适用场景 | 配置复杂度 | 输出质量 | 生态成熟度 |
-|------|----------|------------|----------|------------|
-| Rollup | 库/应用构建 | 中等 | 高 | 成熟 |
-| Webpack | 复杂应用 | 高 | 中 | 非常成熟 |
-| Parcel | 快速原型 | 低 | 中 | 发展中 |
+| 工具 | 速度 | 功能 | 生态 | 配置复杂度 |
+|------|------|------|------|------------|
+| **esbuild** | ⭐⭐⭐⭐⭐ | ⭐⭐⭐ | ⭐⭐⭐ | ⭐ |
+| Babel | ⭐⭐ | ⭐⭐⭐⭐⭐ | ⭐⭐⭐⭐⭐ | ⭐⭐⭐⭐ |
+| SWC | ⭐⭐⭐⭐ | ⭐⭐⭐⭐ | ⭐⭐⭐ | ⭐⭐ |
+| TypeScript | ⭐⭐ | ⭐⭐⭐⭐ | ⭐⭐⭐⭐ | ⭐⭐⭐ |
 
-**选择 Rollup 的原因**：
-- ES 模块原生支持，符合现代开发趋势
-- Tree Shaking 效果好，输出代码质量高
-- 插件系统设计优雅，易于扩展
+### 构建工具对比
 
-### 服务器框架对比
+| 工具 | Tree Shaking | 代码分割 | 插件生态 | 学习成本 |
+|------|--------------|----------|----------|----------|
+| **Rollup** | ⭐⭐⭐⭐⭐ | ⭐⭐⭐⭐ | ⭐⭐⭐⭐ | ⭐⭐⭐ |
+| Webpack | ⭐⭐⭐⭐ | ⭐⭐⭐⭐⭐ | ⭐⭐⭐⭐⭐ | ⭐⭐⭐⭐⭐ |
+| Parcel | ⭐⭐⭐ | ⭐⭐⭐ | ⭐⭐ | ⭐ |
+| esbuild | ⭐⭐⭐ | ⭐⭐ | ⭐⭐ | ⭐ |
 
-| 框架 | 性能 | 功能 | 复杂度 | 适用场景 |
-|------|------|------|--------|----------|
-| Connect | 高 | 基础 | 低 | 开发服务器 |
-| Express | 中 | 丰富 | 中 | Web 应用 |
-| Koa | 高 | 现代 | 中 | 现代应用 |
+## 📐 模块化设计思路
 
-**选择 Connect 的原因**：
-- 轻量级，性能好
-- 中间件架构灵活
-- 足够满足开发服务器需求
+### 核心模块划分
 
-## 2.4 架构决策的权衡
+```mermaid
+graph TD
+    A[mini-vite] --> B[core]
+    A --> C[dev-server]
+    A --> D[build]
+    A --> E[plugins]
+    A --> F[deps]
+    A --> G[utils]
+    
+    B --> B1[config]
+    B --> B2[logger]
+    B --> B3[moduleGraph]
+    
+    C --> C1[server]
+    C --> C2[hmr]
+    C --> C3[middleware]
+    
+    E --> E1[alias]
+    E --> E2[esbuild]
+    E --> E3[css]
+    E --> E4[assets]
+```
 
-### 性能 vs 功能
+### 依赖关系设计
 
-**决策原则**：
-- 优先保证核心功能的性能
-- 通过插件系统扩展功能
-- 避免过度设计和功能膨胀
+**分层架构**
+```
+┌─────────────────┐
+│   CLI Layer     │  命令行接口
+├─────────────────┤
+│  Service Layer  │  开发服务器、构建服务
+├─────────────────┤
+│  Plugin Layer   │  插件系统
+├─────────────────┤
+│   Core Layer    │  配置、日志、模块图
+├─────────────────┤
+│  Utils Layer    │  工具函数
+└─────────────────┘
+```
 
-### 简单 vs 完整
+**依赖方向**: 上层依赖下层，下层不依赖上层
 
-**平衡策略**：
-- 核心功能保持简单易懂
-- 提供足够的扩展点
-- 文档和示例要完整
+### 接口设计原则
 
-### 学习成本 vs 功能强大
+**1. 最小接口原则**
+```typescript
+// 只暴露必要的方法
+interface ModuleGraph {
+  getModuleByUrl(url: string): ModuleNode | undefined
+  onFileChange(file: string): void
+  invalidateModule(mod: ModuleNode): void
+}
+```
 
-**设计思路**：
-- 降低入门门槛
-- 提供渐进式学习路径
-- 保持 API 的一致性和直观性
+**2. 依赖倒置原则**
+```typescript
+// 依赖抽象而非具体实现
+interface Logger {
+  info(msg: string): void
+  warn(msg: string): void
+  error(msg: string): void
+}
 
-这些技术选型和架构决策确保了 Mini Vite 既具备现代构建工具的核心能力，又保持了代码的简洁性和可理解性，为学习者提供了一个优秀的学习案例。
+class DevServer {
+  constructor(private logger: Logger) {}
+}
+```
+
+**3. 开闭原则**
+```typescript
+// 对扩展开放，对修改关闭
+interface Plugin {
+  name: string
+  // 可扩展的钩子函数
+  [hookName: string]: any
+}
+```
+
+## 🎯 架构优势
+
+### 1. 高性能
+- **esbuild**: 极快的代码转换
+- **ES 模块**: 浏览器原生支持，无需打包
+- **按需编译**: 只处理访问的模块
+- **智能缓存**: 避免重复处理
+
+### 2. 高可扩展性
+- **插件系统**: 功能可插拔
+- **中间件架构**: 请求处理可定制
+- **配置系统**: 灵活的配置选项
+- **钩子函数**: 丰富的扩展点
+
+### 3. 高可维护性
+- **模块化设计**: 职责清晰
+- **类型安全**: TypeScript 支持
+- **单元测试**: 完善的测试覆盖
+- **文档完善**: 详细的 API 文档
+
+### 4. 开发友好
+- **零配置**: 开箱即用
+- **热更新**: 快速反馈
+- **错误提示**: 友好的错误信息
+- **调试支持**: Source Map 支持
+
+## 🔄 与 Vite 的对比
+
+### 相似之处
+- ES 模块优先的开发体验
+- 依赖预构建优化
+- 插件驱动的架构
+- 快速的热更新
+
+### 简化之处
+- **插件系统**: 更简单的钩子设计
+- **配置选项**: 聚焦核心功能
+- **文件类型**: 支持基础的 JS/TS/CSS
+- **优化策略**: 基础的构建优化
+
+### 技术差异
+
+| 方面 | Vite | Mini Vite |
+|------|------|-----------|
+| 插件系统 | Rollup 插件兼容 | 自定义简化版本 |
+| CSS 处理 | PostCSS + 预处理器 | 基础 CSS 处理 |
+| 框架支持 | Vue/React/Svelte | 通用 JS/TS |
+| 构建优化 | 高度优化 | 基础优化 |
+
+## 🎓 设计思考
+
+### 为什么选择这样的架构？
+
+1. **学习友好**: 简化复杂度，突出核心概念
+2. **实用性强**: 涵盖现代构建工具的关键特性
+3. **扩展性好**: 为后续功能扩展留下空间
+4. **性能优秀**: 选择高性能的底层工具
+
+### 架构演进思路
+
+```mermaid
+graph LR
+    A[基础版本] --> B[插件系统]
+    B --> C[性能优化]
+    C --> D[生态扩展]
+    
+    A1[核心功能] --> A
+    B1[可扩展性] --> B
+    C1[生产就绪] --> C
+    D1[社区驱动] --> D
+```
+
+## 🚀 下一步
+
+现在您已经了解了 Mini Vite 的技术选型和架构设计，接下来我们将：
+
+1. **[分步骤实现过程](./03-implementation-steps.md)** - 开始动手实现
+2. **[关键技术点深入解析](./04-technical-deep-dive.md)** - 深入理解核心原理
+
+让我们开始构建这个强大的工具！🛠️

@@ -1,430 +1,608 @@
-# 5. 遇到的挑战和解决方案
+# 遇到的挑战和解决方案
 
-## 5.1 TypeScript 类型系统挑战
+## 🚧 技术难点分析
 
-### 挑战：复杂的插件接口类型定义
+### 1. ES 模块导入重写
 
-**问题描述**：
-插件系统需要支持同步和异步操作，返回值类型复杂，需要在类型安全和灵活性之间找到平衡。
+**挑战描述**
+浏览器无法直接解析裸模块导入（bare imports），需要将 `import Vue from 'vue'` 重写为可访问的路径。
 
-**初始方案的问题**：
+**问题示例**
+```javascript
+// 原始代码
+import { createApp } from 'vue'
+import { router } from 'vue-router'
+import utils from './utils'
+
+// 浏览器无法解析 'vue' 和 'vue-router'
+```
+
+**解决方案**
 ```typescript
-// 过于严格，不够灵活
-interface Plugin {
-  transform: (code: string, id: string) => TransformResult
-}
-
-// 过于宽泛，失去类型安全
-interface Plugin {
-  transform: (code: string, id: string) => any
+function rewriteImports(code: string, importer: string): string {
+  // 使用 es-module-lexer 解析导入
+  const [imports] = parse(code)
+  
+  let rewrittenCode = code
+  let offset = 0
+  
+  for (const imp of imports) {
+    const { s: start, e: end, n: specifier } = imp
+    
+    if (specifier && !specifier.startsWith('.') && !specifier.startsWith('/')) {
+      // 重写裸模块导入
+      const rewritten = `/@modules/${specifier}`
+      const before = rewrittenCode.slice(0, start + offset)
+      const after = rewrittenCode.slice(end + offset)
+      
+      rewrittenCode = before + rewritten + after
+      offset += rewritten.length - specifier.length
+    }
+  }
+  
+  return rewrittenCode
 }
 ```
 
-**最终解决方案**：
-```typescript
-interface Plugin {
-  name: string
-  transform?: (code: string, id: string) => TransformResult | null | Promise<TransformResult | null>
-}
+**关键技术点**
+- 使用 `es-module-lexer` 精确解析 ES 模块语法
+- 保持源码位置信息用于 Source Map
+- 处理动态导入 `import()` 语法
+- 避免重写注释中的导入语句
 
-interface TransformResult {
-  code: string
-  map?: string | null
+### 2. 循环依赖检测和处理
+
+**挑战描述**
+模块间的循环依赖可能导致无限递归，需要检测并妥善处理。
+
+**问题示例**
+```javascript
+// a.js
+import { b } from './b.js'
+export const a = 'a' + b
+
+// b.js  
+import { a } from './a.js'  // 循环依赖
+export const b = 'b' + a
+```
+
+**解决方案**
+```typescript
+class ModuleGraphImpl {
+  private detectCircularDependency(
+    mod: ModuleNode, 
+    visited = new Set<ModuleNode>(),
+    path = new Set<ModuleNode>()
+  ): ModuleNode[] | null {
+    
+    if (path.has(mod)) {
+      // 发现循环依赖，返回循环路径
+      return Array.from(path).concat(mod)
+    }
+    
+    if (visited.has(mod)) {
+      return null
+    }
+    
+    visited.add(mod)
+    path.add(mod)
+    
+    for (const dep of mod.importedModules) {
+      const cycle = this.detectCircularDependency(dep, visited, path)
+      if (cycle) return cycle
+    }
+    
+    path.delete(mod)
+    return null
+  }
+  
+  addImportedModule(importer: ModuleNode, imported: ModuleNode) {
+    importer.importedModules.add(imported)
+    imported.importers.add(importer)
+    
+    // 检查是否产生循环依赖
+    const cycle = this.detectCircularDependency(imported)
+    if (cycle) {
+      this.logger.warn(`Circular dependency detected: ${cycle.map(m => m.id).join(' -> ')}`)
+      // 可以选择打断循环或发出警告
+    }
+  }
 }
 ```
 
-**关键改进**：
-- 使用联合类型支持同步/异步操作
-- 允许返回 `null` 表示插件不处理该文件
-- 明确定义返回值结构
+### 3. Source Map 链式合并
 
-### 挑战：模块图的循环引用类型
+**挑战描述**
+多个插件依次转换代码时，需要正确合并 Source Map 以保持调试信息。
 
-**问题描述**：
-模块图中的节点相互引用，TypeScript 难以处理循环引用的类型定义。
+**问题示例**
+```
+原始 TypeScript → esbuild 转换 → 导入重写 → CSS 注入
+     ↓              ↓              ↓          ↓
+   source.ts    →  temp.js    →  rewritten.js → final.js
+     ↓              ↓              ↓          ↓
+   map1.json   →  map2.json   →  map3.json  → final.map
+```
 
-**解决方案**：
+**解决方案**
 ```typescript
-// 使用接口声明避免循环引用问题
-export interface ModuleNode {
-  id: string
-  file: string | null
-  importers: Set<ModuleNode>      // 循环引用
-  importedModules: Set<ModuleNode> // 循环引用
-  transformResult: TransformResult | null
-}
+import { SourceMapGenerator, SourceMapConsumer } from 'source-map'
 
-// 实现类分离定义
-export class ModuleNodeImpl implements ModuleNode {
-  // 具体实现
+function combineSourceMaps(
+  originalMap: string | null,
+  newMap: string | null
+): string | null {
+  if (!originalMap) return newMap
+  if (!newMap) return originalMap
+  
+  const consumer1 = new SourceMapConsumer(JSON.parse(originalMap))
+  const consumer2 = new SourceMapConsumer(JSON.parse(newMap))
+  const generator = new SourceMapGenerator()
+  
+  consumer2.eachMapping(mapping => {
+    if (mapping.originalLine == null) return
+    
+    // 查找原始位置
+    const original = consumer1.originalPositionFor({
+      line: mapping.originalLine,
+      column: mapping.originalColumn
+    })
+    
+    if (original.source) {
+      generator.addMapping({
+        generated: {
+          line: mapping.generatedLine,
+          column: mapping.generatedColumn
+        },
+        original: {
+          line: original.line!,
+          column: original.column!
+        },
+        source: original.source,
+        name: original.name
+      })
+    }
+  })
+  
+  return generator.toString()
 }
 ```
 
-## 5.2 异步操作和错误处理
+### 4. 文件监听的性能优化
 
-### 挑战：插件链的异步执行
+**挑战描述**
+大型项目中文件监听可能消耗大量系统资源，需要优化监听策略。
 
-**问题描述**：
-插件需要按顺序执行，但每个插件可能是异步的，需要正确处理异步流程和错误传播。
+**问题分析**
+- 监听整个项目目录会产生大量无用事件
+- 频繁的文件变更可能导致重复处理
+- 某些编辑器会产生临时文件干扰
 
-**错误的实现**：
+**解决方案**
 ```typescript
-// 错误：并发执行，顺序不确定
-async transform(code: string, id: string) {
-  const promises = this.plugins.map(plugin => 
-    plugin.transform?.(code, id)
-  )
-  const results = await Promise.all(promises)
-  // 无法正确链式处理
+function createOptimizedWatcher(config: ResolvedConfig) {
+  const watcher = chokidar.watch(config.root, {
+    // 忽略不需要的目录
+    ignored: [
+      '**/node_modules/**',
+      '**/.git/**',
+      '**/dist/**',
+      '**/.DS_Store',
+      '**/Thumbs.db',
+      // 编辑器临时文件
+      '**/*.tmp',
+      '**/*.swp',
+      '**/*~'
+    ],
+    ignoreInitial: true,
+    // 防抖设置
+    awaitWriteFinish: {
+      stabilityThreshold: 100,
+      pollInterval: 10
+    },
+    // 性能优化
+    usePolling: false,
+    atomic: true
+  })
+  
+  // 防抖处理
+  const debouncedHandler = debounce(handleFileChange, 50)
+  
+  watcher.on('change', debouncedHandler)
+  watcher.on('add', debouncedHandler)
+  watcher.on('unlink', debouncedHandler)
+  
+  return watcher
+}
+
+function debounce<T extends (...args: any[]) => any>(
+  func: T,
+  wait: number
+): T {
+  let timeout: NodeJS.Timeout
+  
+  return ((...args: Parameters<T>) => {
+    clearTimeout(timeout)
+    timeout = setTimeout(() => func(...args), wait)
+  }) as T
 }
 ```
 
-**正确的解决方案**：
-```typescript
-async transform(code: string, id: string): Promise<TransformResult | null> {
-  let result: TransformResult = { code, map: null }
+## 🐛 错误处理经验
 
-  // 顺序执行插件
-  for (const plugin of this.plugins) {
-    if (plugin.transform) {
+### 1. 模块解析失败
+
+**常见错误**
+```
+Error: Cannot resolve module './component.vue'
+Error: Module not found: 'non-existent-package'
+```
+
+**解决策略**
+```typescript
+async function resolveId(id: string, importer?: string): Promise<string | null> {
+  try {
+    // 1. 尝试标准解析
+    const resolved = await standardResolve(id, importer)
+    if (resolved) return resolved
+    
+    // 2. 尝试添加扩展名
+    for (const ext of ['.js', '.ts', '.jsx', '.tsx', '.vue']) {
+      const withExt = id + ext
+      const resolved = await standardResolve(withExt, importer)
+      if (resolved) return resolved
+    }
+    
+    // 3. 尝试 index 文件
+    for (const indexFile of ['index.js', 'index.ts']) {
+      const indexPath = join(id, indexFile)
+      const resolved = await standardResolve(indexPath, importer)
+      if (resolved) return resolved
+    }
+    
+    return null
+  } catch (error) {
+    // 提供友好的错误信息
+    throw new Error(`Failed to resolve module "${id}" from "${importer}"\n${error.message}`)
+  }
+}
+```
+
+### 2. 转换错误处理
+
+**错误类型**
+- 语法错误
+- 类型错误
+- 插件错误
+
+**处理机制**
+```typescript
+async function safeTransform(code: string, id: string): Promise<TransformResult> {
+  try {
+    return await pluginContainer.transform(code, id)
+  } catch (error) {
+    // 构建详细错误信息
+    const errorInfo = {
+      id,
+      message: error.message,
+      stack: error.stack,
+      loc: error.loc, // 错误位置
+      frame: generateCodeFrame(code, error.loc) // 代码片段
+    }
+    
+    // 在开发模式下发送错误到浏览器
+    if (config.command === 'serve') {
+      ws.send(JSON.stringify({
+        type: 'error',
+        err: errorInfo
+      }))
+    }
+    
+    throw new BuildError(errorInfo)
+  }
+}
+
+function generateCodeFrame(source: string, loc?: { line: number, column: number }): string {
+  if (!loc) return ''
+  
+  const lines = source.split('\n')
+  const { line, column } = loc
+  const start = Math.max(0, line - 3)
+  const end = Math.min(lines.length, line + 3)
+  
+  return lines
+    .slice(start, end)
+    .map((l, i) => {
+      const lineNum = start + i + 1
+      const indicator = lineNum === line ? '>' : ' '
+      const pointer = lineNum === line ? ' '.repeat(column) + '^' : ''
+      return `${indicator} ${lineNum} | ${l}\n${pointer}`
+    })
+    .join('\n')
+}
+```
+
+### 3. HMR 连接失败
+
+**问题场景**
+- WebSocket 连接被防火墙阻止
+- 端口冲突
+- 网络代理问题
+
+**解决方案**
+```typescript
+function createRobustHMRConnection() {
+  let ws: WebSocket
+  let reconnectAttempts = 0
+  const maxReconnectAttempts = 5
+  
+  function connect() {
+    try {
+      ws = new WebSocket(`ws://${location.hostname}:3001`)
+      
+      ws.onopen = () => {
+        console.log('[HMR] Connected')
+        reconnectAttempts = 0
+      }
+      
+      ws.onclose = () => {
+        if (reconnectAttempts < maxReconnectAttempts) {
+          console.log(`[HMR] Connection lost, reconnecting... (${reconnectAttempts + 1}/${maxReconnectAttempts})`)
+          setTimeout(() => {
+            reconnectAttempts++
+            connect()
+          }, 1000 * Math.pow(2, reconnectAttempts)) // 指数退避
+        } else {
+          console.warn('[HMR] Max reconnection attempts reached')
+        }
+      }
+      
+      ws.onerror = (error) => {
+        console.error('[HMR] Connection error:', error)
+      }
+      
+    } catch (error) {
+      console.error('[HMR] Failed to create WebSocket connection:', error)
+    }
+  }
+  
+  connect()
+  return ws
+}
+```
+
+## 🔧 调试技巧总结
+
+### 1. 开发时调试
+
+**日志系统**
+```typescript
+const debug = createDebugger('mini-vite:transform')
+
+async function transformRequest(url: string) {
+  debug(`Transforming: ${url}`)
+  
+  const start = performance.now()
+  const result = await doTransform(url)
+  const duration = performance.now() - start
+  
+  debug(`Transformed ${url} in ${duration.toFixed(2)}ms`)
+  return result
+}
+
+function createDebugger(namespace: string) {
+  const enabled = process.env.DEBUG?.includes(namespace)
+  
+  return (message: string, ...args: any[]) => {
+    if (enabled) {
+      console.log(`${namespace} ${message}`, ...args)
+    }
+  }
+}
+```
+
+**性能监控**
+```typescript
+class Timer {
+  private start: number
+  
+  constructor(private label: string) {
+    this.start = performance.now()
+  }
+  
+  end() {
+    const duration = performance.now() - this.start
+    console.log(`⏱️  ${this.label}: ${duration.toFixed(2)}ms`)
+    return duration
+  }
+}
+
+// 使用示例
+const timer = new Timer('Module transformation')
+await transformModule(code, id)
+timer.end()
+```
+
+### 2. 模块图可视化
+
+**调试端点**
+```typescript
+function setupDebugEndpoints(server: DevServer) {
+  server.middlewares.use('/__debug/module-graph', (req, res) => {
+    const graph = server.moduleGraph
+    const nodes = Array.from(graph.urlToModuleMap.values()).map(mod => ({
+      id: mod.id,
+      importers: Array.from(mod.importers).map(m => m.id),
+      importedModules: Array.from(mod.importedModules).map(m => m.id),
+      lastHMRTimestamp: mod.lastHMRTimestamp
+    }))
+    
+    res.setHeader('Content-Type', 'application/json')
+    res.end(JSON.stringify(nodes, null, 2))
+  })
+}
+```
+
+### 3. 插件调试
+
+**插件执行跟踪**
+```typescript
+class PluginContainer {
+  async transform(code: string, id: string): Promise<TransformResult> {
+    let result = { code, map: null }
+    
+    for (const plugin of this.plugins) {
+      if (!plugin.transform) continue
+      
+      const pluginTimer = new Timer(`Plugin ${plugin.name}`)
+      
       try {
         const transformResult = await plugin.transform(result.code, id)
         if (transformResult) {
           result = transformResult
+          debug(`Plugin ${plugin.name} transformed ${id}`)
         }
       } catch (error) {
-        this.config.logger.error(`Plugin ${plugin.name} transform error:`, error)
+        console.error(`Plugin ${plugin.name} failed to transform ${id}:`, error)
         throw error
+      } finally {
+        pluginTimer.end()
       }
     }
+    
+    return result
   }
-
-  return result.code !== code ? result : null
 }
 ```
 
-### 挑战：文件系统操作的竞态条件
+## 💪 性能优化实践
 
-**问题描述**：
-多个并发的文件操作可能导致竞态条件，特别是在创建目录和写入文件时。
+### 1. 缓存策略优化
 
-**解决方案**：
+**多层缓存设计**
 ```typescript
-// 使用 Map 缓存正在进行的操作
-const pendingDirCreations = new Map<string, Promise<void>>()
-
-export async function ensureDir(dir: string): Promise<void> {
-  // 检查是否已有正在进行的创建操作
-  const pending = pendingDirCreations.get(dir)
-  if (pending) {
-    return pending
+class CacheManager {
+  private memoryCache = new Map<string, CacheEntry>()
+  private diskCache: DiskCache
+  
+  constructor(cacheDir: string) {
+    this.diskCache = new DiskCache(cacheDir)
   }
+  
+  async get(key: string): Promise<any> {
+    // 1. 检查内存缓存
+    const memoryEntry = this.memoryCache.get(key)
+    if (memoryEntry && !this.isExpired(memoryEntry)) {
+      return memoryEntry.value
+    }
+    
+    // 2. 检查磁盘缓存
+    const diskEntry = await this.diskCache.get(key)
+    if (diskEntry && !this.isExpired(diskEntry)) {
+      // 回写到内存缓存
+      this.memoryCache.set(key, diskEntry)
+      return diskEntry.value
+    }
+    
+    return null
+  }
+  
+  async set(key: string, value: any, ttl = 3600000) { // 1小时
+    const entry = {
+      value,
+      timestamp: Date.now(),
+      ttl
+    }
+    
+    // 同时写入内存和磁盘
+    this.memoryCache.set(key, entry)
+    await this.diskCache.set(key, entry)
+  }
+}
+```
 
-  const promise = (async () => {
+### 2. 并发处理优化
+
+**并行转换**
+```typescript
+class ParallelTransformer {
+  private queue = new Map<string, Promise<TransformResult>>()
+  
+  async transform(code: string, id: string): Promise<TransformResult> {
+    // 避免重复转换同一个模块
+    if (this.queue.has(id)) {
+      return this.queue.get(id)!
+    }
+    
+    const transformPromise = this.doTransform(code, id)
+    this.queue.set(id, transformPromise)
+    
     try {
-      await fs.mkdir(dir, { recursive: true })
-    } catch (error: any) {
-      if (error.code !== 'EEXIST') {
-        throw error
-      }
+      const result = await transformPromise
+      return result
     } finally {
-      pendingDirCreations.delete(dir)
-    }
-  })()
-
-  pendingDirCreations.set(dir, promise)
-  return promise
-}
-```
-
-## 5.3 模块解析和路径处理
-
-### 挑战：跨平台路径兼容性
-
-**问题描述**：
-Windows 和 Unix 系统的路径分隔符不同，需要统一处理。
-
-**解决方案**：
-```typescript
-export function normalizePath(id: string): string {
-  return id.replace(/\\/g, '/')
-}
-
-// 在所有路径操作中使用
-function resolveModulePath(id: string, importer?: string): string {
-  const resolved = importer 
-    ? resolve(dirname(importer), id)
-    : resolve(id)
-  
-  return normalizePath(resolved)
-}
-```
-
-### 挑战：模块 ID 的清理和标准化
-
-**问题描述**：
-URL 可能包含查询参数和哈希，需要正确提取模块 ID。
-
-**解决方案**：
-```typescript
-export function cleanUrl(url: string): string {
-  return url.replace(/[?#].*$/, '')
-}
-
-export function removeTimestampQuery(url: string): string {
-  return url.replace(/\bt=\d{13}&?\b/, '').replace(/[?&]$/, '')
-}
-
-// 在模块图中使用
-ensureEntryFromUrl(rawUrl: string): ModuleNode {
-  const url = cleanUrl(rawUrl)
-  // 使用清理后的 URL 作为模块 ID
-}
-```
-
-## 5.4 HMR 实现的技术难点
-
-### 挑战：WebSocket 连接管理
-
-**问题描述**：
-需要处理客户端连接、断开、重连等情况，确保 HMR 的稳定性。
-
-**解决方案**：
-```typescript
-export function createHMRServer(): HMRServer {
-  const ws = new WebSocketServer({ port: 3001 })
-  const clients = new Set<WebSocket>()
-
-  function send(payload: HMRPayload) {
-    const message = JSON.stringify(payload)
-    
-    // 清理已断开的连接
-    const deadClients = new Set<WebSocket>()
-    
-    clients.forEach(client => {
-      if (client.readyState === WebSocket.OPEN) {
-        try {
-          client.send(message)
-        } catch (error) {
-          deadClients.add(client)
-        }
-      } else {
-        deadClients.add(client)
-      }
-    })
-    
-    // 移除死连接
-    deadClients.forEach(client => clients.delete(client))
-  }
-
-  ws.on('connection', (socket) => {
-    clients.add(socket)
-    
-    socket.on('close', () => {
-      clients.delete(socket)
-    })
-    
-    socket.on('error', (error) => {
-      console.error('WebSocket error:', error)
-      clients.delete(socket)
-    })
-  })
-
-  return { ws, send, close: () => ws.close() }
-}
-```
-
-### 挑战：模块更新的影响范围计算
-
-**问题描述**：
-当一个模块发生变化时，需要准确计算哪些模块需要更新，避免不必要的全量刷新。
-
-**解决方案**：
-```typescript
-function calculateUpdateScope(changedModule: ModuleNode): {
-  shouldFullReload: boolean
-  affectedModules: Set<ModuleNode>
-} {
-  const affectedModules = new Set<ModuleNode>()
-  const visited = new Set<ModuleNode>()
-  
-  function traverse(mod: ModuleNode): boolean {
-    if (visited.has(mod)) return false
-    visited.add(mod)
-    
-    // 检查模块是否接受热更新
-    if (mod.isSelfAccepting) {
-      affectedModules.add(mod)
-      return false // 不需要继续向上传播
-    }
-    
-    // 检查是否有接受此模块更新的父模块
-    for (const importer of mod.importers) {
-      if (importer.acceptedHmrDeps.has(mod)) {
-        affectedModules.add(importer)
-        return false // 找到接受者，停止传播
-      }
-      
-      // 继续向上传播
-      if (traverse(importer)) {
-        return true // 需要全量刷新
-      }
-    }
-    
-    // 如果没有找到接受者，需要全量刷新
-    return mod.importers.size > 0
-  }
-  
-  const shouldFullReload = traverse(changedModule)
-  
-  return { shouldFullReload, affectedModules }
-}
-```
-
-## 5.5 构建系统集成问题
-
-### 挑战：Rollup 插件与 Vite 插件的兼容性
-
-**问题描述**：
-需要将自定义的插件系统与 Rollup 的插件系统集成。
-
-**解决方案**：
-```typescript
-function createViteRollupPlugin(pluginContainer: PluginContainer) {
-  return {
-    name: 'vite:build',
-    
-    async resolveId(id: string, importer?: string) {
-      const result = await pluginContainer.resolveId(id, importer)
-      return result?.id || null
-    },
-    
-    async load(id: string) {
-      const result = await pluginContainer.load(id)
-      return typeof result === 'string' ? result : result?.code || null
-    },
-    
-    async transform(code: string, id: string) {
-      const result = await pluginContainer.transform(code, id)
-      return result ? { 
-        code: result.code, 
-        map: result.map 
-      } : null
-    },
-  }
-}
-```
-
-### 挑战：HTML 入口文件的处理
-
-**问题描述**：
-Rollup 默认不支持 HTML 作为入口文件，需要特殊处理。
-
-**解决方案**：
-```typescript
-async function findEntryPoints(config: ResolvedConfig): Promise<string> {
-  // 检查 HTML 文件
-  const htmlPath = resolve(config.root, 'index.html')
-  if (await pathExists(htmlPath)) {
-    // 解析 HTML 中的脚本入口
-    const htmlContent = await fs.readFile(htmlPath, 'utf-8')
-    const scriptMatch = htmlContent.match(/<script[^>]+src=["']([^"']+)["'][^>]*>/)
-    
-    if (scriptMatch) {
-      const scriptSrc = scriptMatch[1]
-      const scriptPath = resolve(config.root, scriptSrc.startsWith('./') ? scriptSrc.slice(2) : scriptSrc)
-      
-      if (await pathExists(scriptPath)) {
-        return scriptPath
-      }
+      this.queue.delete(id)
     }
   }
   
-  // 回退到 JS 入口
-  const jsEntries = ['src/main.js', 'src/main.ts', 'src/index.js', 'src/index.ts']
-  for (const entry of jsEntries) {
-    const entryPath = resolve(config.root, entry)
-    if (await pathExists(entryPath)) {
-      return entryPath
+  private async doTransform(code: string, id: string): Promise<TransformResult> {
+    // 实际转换逻辑
+    return await pluginContainer.transform(code, id)
+  }
+}
+```
+
+### 3. 内存使用优化
+
+**弱引用缓存**
+```typescript
+class WeakCache {
+  private cache = new WeakMap<object, any>()
+  private refs = new Map<string, WeakRef<object>>()
+  
+  set(key: string, target: object, value: any) {
+    this.cache.set(target, value)
+    this.refs.set(key, new WeakRef(target))
+  }
+  
+  get(key: string): any {
+    const ref = this.refs.get(key)
+    if (!ref) return undefined
+    
+    const target = ref.deref()
+    if (!target) {
+      this.refs.delete(key)
+      return undefined
     }
-  }
-  
-  throw new Error('No entry point found')
-}
-
-// 构建后处理 HTML
-async function processHTML(config: ResolvedConfig): Promise<void> {
-  const htmlPath = resolve(config.root, 'index.html')
-  if (!(await pathExists(htmlPath))) return
-
-  let html = await fs.readFile(htmlPath, 'utf-8')
-  
-  // 查找构建输出的 JS 文件
-  const assetsDir = join(config.build.outDir, config.build.assetsDir)
-  const jsFiles = await findJSFiles(assetsDir)
-  
-  // 替换脚本引用
-  html = html.replace(
-    /<script[^>]+src=["'][^"']+["'][^>]*><\/script>/g,
-    ''
-  )
-  
-  const scriptTags = jsFiles
-    .map(file => `  <script type="module" src="${config.base}${file}"></script>`)
-    .join('\n')
-  
-  html = html.replace('</body>', `${scriptTags}\n</body>`)
-  
-  await fs.writeFile(resolve(config.build.outDir, 'index.html'), html)
-}
-```
-
-## 5.6 调试和错误排查经验
-
-### 调试技巧
-
-1. **使用详细的日志**：
-```typescript
-const debug = createDebugger('mini-vite:transform')
-
-async function transform(code: string, id: string) {
-  debug(`Transforming ${id}`)
-  debug(`Input code length: ${code.length}`)
-  
-  const result = await doTransform(code, id)
-  
-  debug(`Output code length: ${result.code.length}`)
-  return result
-}
-```
-
-2. **错误上下文信息**：
-```typescript
-try {
-  await transformModule(id)
-} catch (error) {
-  throw new BuildError(
-    `Failed to transform ${id}: ${error.message}`,
-    'TRANSFORM_ERROR',
-    { file: id, line: error.line, column: error.column }
-  )
-}
-```
-
-3. **性能监控**：
-```typescript
-class Timer {
-  private startTime = performance.now()
-  
-  stop(): number {
-    return performance.now() - this.startTime
-  }
-  
-  stopAndLog(label: string): void {
-    const time = this.stop()
-    console.log(`${label}: ${time.toFixed(2)}ms`)
+    
+    return this.cache.get(target)
   }
 }
 ```
 
-这些挑战和解决方案展示了在构建现代前端工具时需要考虑的各种技术细节，每个问题的解决都体现了工程实践中的权衡和优化思路。
+## 🎯 经验总结
+
+### 关键学习点
+
+1. **错误处理要全面**: 预期各种异常情况，提供友好的错误信息
+2. **性能监控很重要**: 及时发现性能瓶颈，持续优化
+3. **缓存策略需精心设计**: 平衡内存使用和性能提升
+4. **调试工具不可少**: 完善的调试工具能大大提升开发效率
+5. **渐进式优化**: 先实现功能，再逐步优化性能
+
+### 避免的陷阱
+
+1. **过早优化**: 在功能完善前不要过度关注性能
+2. **忽略边界情况**: 循环依赖、文件不存在等情况要考虑
+3. **缓存失效问题**: 确保缓存在文件变更时正确失效
+4. **内存泄漏**: 注意清理事件监听器和定时器
+5. **错误信息不清晰**: 提供足够的上下文信息帮助调试
+
+## 🚀 下一步
+
+现在您已经了解了开发过程中的主要挑战和解决方案，接下来可以：
+
+1. **[学习最佳实践](./06-best-practices.md)** - 提升代码质量和可维护性
+2. **[探索扩展方向](./07-future-improvements.md)** - 思考功能扩展和改进
+
+继续深入学习，成为构建工具开发专家！🛠️

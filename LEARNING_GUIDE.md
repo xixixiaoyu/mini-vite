@@ -2,45 +2,53 @@
 
 ## 📖 学习指南目录
 
-本学习指南分为多个部分，帮助您系统性地理解 Mini Vite 构建工具的完整开发过程：
+本学习指南分为多个部分，帮助您系统性地理解 Mini Vite 构建工具的完整开发过程。
 
-### 📚 指南文件列表
+> 💡 **重要提示**: 详细的学习文档已移至 `docs/` 目录，请查看 [docs/README.md](./docs/README.md) 获取完整的学习路径。
 
-1. **[项目概述与目标](./docs/01-project-overview.md)**
+### 📚 完整学习文档列表
+
+1. **[项目概述与目标](./docs/01-project-overview.md)** 🎯
    - 为什么要构建 Mini Vite
    - 核心问题和解决方案
    - 学习价值和目标
+   - 项目特性概览
 
-2. **[技术选型与架构决策](./docs/02-tech-stack.md)**
+2. **[技术选型与架构决策](./docs/02-tech-stack.md)** 🛠️
    - 核心技术栈选择理由
    - 架构设计原则
    - 与其他工具的对比
+   - 模块化设计思路
 
-3. **[分步骤实现过程](./docs/03-implementation-steps.md)**
-   - 项目初始化
-   - 核心模块实现
+3. **[分步骤实现过程](./docs/03-implementation-steps.md)** 🏗️
+   - 项目初始化和环境搭建
+   - 核心模块逐步实现
    - 功能集成和测试
+   - 打包和发布准备
 
-4. **[关键技术点深入解析](./docs/04-technical-deep-dive.md)**
+4. **[关键技术点深入解析](./docs/04-technical-deep-dive.md)** 🔍
    - ES 模块处理机制
    - HMR 实现原理
    - 插件系统设计
    - 构建优化策略
 
-5. **[遇到的挑战和解决方案](./docs/05-challenges-solutions.md)**
+5. **[遇到的挑战和解决方案](./docs/05-challenges-solutions.md)** 🚧
    - 技术难点分析
    - 错误处理经验
    - 调试技巧总结
+   - 性能优化实践
 
-6. **[最佳实践和经验总结](./docs/06-best-practices.md)**
+6. **[最佳实践和经验总结](./docs/06-best-practices.md)** ⭐
    - 代码组织模式
    - 性能优化技巧
    - 可维护性设计
+   - 测试策略
 
-7. **[扩展方向和改进建议](./docs/07-future-improvements.md)**
+7. **[扩展方向和改进建议](./docs/07-future-improvements.md)** 🚀
    - 功能扩展思路
    - 性能优化方向
    - 生态建设建议
+   - 未来发展规划
 
 ### 🎯 学习路径建议
 

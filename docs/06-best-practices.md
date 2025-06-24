@@ -1,514 +1,713 @@
-# 6. 最佳实践和经验总结
+# 最佳实践和经验总结
 
-## 6.1 代码组织模式
+## 📋 代码组织模式
 
-### 模块化设计原则
+### 1. 模块化架构设计
 
-**单一职责原则**：
-```typescript
-// ✅ 好的设计：每个模块职责单一
-// src/core/config.ts - 只负责配置管理
-// src/core/logger.ts - 只负责日志处理
-// src/core/moduleGraph.ts - 只负责模块图管理
-
-// ❌ 避免：一个模块承担多个职责
-// src/core/utils.ts - 包含配置、日志、模块图等各种功能
+**分层架构原则**
+```
+┌─────────────────┐
+│   CLI Layer     │  命令行接口，用户交互
+├─────────────────┤
+│  Service Layer  │  核心服务，业务逻辑
+├─────────────────┤
+│  Plugin Layer   │  插件系统，功能扩展
+├─────────────────┤
+│   Core Layer    │  基础设施，通用功能
+├─────────────────┤
+│  Utils Layer    │  工具函数，辅助功能
+└─────────────────┘
 ```
 
-**依赖倒置原则**：
-```typescript
-// ✅ 依赖抽象接口，而非具体实现
-interface Logger {
-  info(msg: string): void
-  error(msg: string): void
-}
-
-class DevServer {
-  constructor(private logger: Logger) {}
-}
-
-// ❌ 直接依赖具体实现
-class DevServer {
-  constructor() {
-    this.logger = new ConsoleLogger() // 硬编码依赖
-  }
-}
+**目录结构最佳实践**
+```
+src/
+├── cli/                    # CLI 相关
+│   ├── commands/          # 命令实现
+│   └── index.ts           # CLI 入口
+├── core/                  # 核心模块
+│   ├── config.ts          # 配置管理
+│   ├── logger.ts          # 日志系统
+│   └── moduleGraph.ts     # 模块图
+├── services/              # 业务服务
+│   ├── dev-server/        # 开发服务器
+│   ├── build/             # 构建服务
+│   └── preview/           # 预览服务
+├── plugins/               # 插件系统
+│   ├── built-in/          # 内置插件
+│   └── container.ts       # 插件容器
+├── utils/                 # 工具函数
+│   ├── fs.ts              # 文件系统工具
+│   ├── path.ts            # 路径处理
+│   └── performance.ts     # 性能工具
+└── types/                 # 类型定义
+    ├── config.ts          # 配置类型
+    ├── plugin.ts          # 插件类型
+    └── index.ts           # 导出类型
 ```
 
-**接口隔离原则**：
+### 2. 接口设计原则
+
+**单一职责原则**
 ```typescript
-// ✅ 细粒度的接口设计
-interface Resolver {
+// ❌ 违反单一职责
+interface DevServer {
+  start(): void
+  stop(): void
+  transform(code: string): string
+  resolveModule(id: string): string
+  handleHMR(): void
+  buildProduction(): void  // 不应该在开发服务器中
+}
+
+// ✅ 遵循单一职责
+interface DevServer {
+  start(): void
+  stop(): void
+  transformRequest(url: string): Promise<TransformResult>
+}
+
+interface ModuleResolver {
   resolveId(id: string, importer?: string): Promise<string | null>
 }
 
-interface Loader {
-  load(id: string): Promise<string | null>
-}
-
-interface Transformer {
-  transform(code: string, id: string): Promise<TransformResult | null>
-}
-
-// 插件可以选择实现需要的接口
-class MyPlugin implements Resolver, Transformer {
-  // 只实现需要的方法
+interface HMRServer {
+  handleUpdate(file: string): void
+  broadcast(message: any): void
 }
 ```
 
-### 错误处理模式
-
-**统一的错误类型**：
+**依赖倒置原则**
 ```typescript
-export class BuildError extends Error {
+// ✅ 依赖抽象而非具体实现
+interface Logger {
+  info(message: string): void
+  warn(message: string): void
+  error(message: string): void
+}
+
+class DevServer {
+  constructor(
+    private config: ResolvedConfig,
+    private logger: Logger,  // 依赖抽象
+    private moduleGraph: ModuleGraph
+  ) {}
+}
+
+// 具体实现可以替换
+const consoleLogger: Logger = new ConsoleLogger()
+const fileLogger: Logger = new FileLogger()
+```
+
+### 3. 错误处理模式
+
+**统一错误类型**
+```typescript
+export class MiniViteError extends Error {
   constructor(
     message: string,
-    public code?: string,
-    public loc?: { file?: string; line?: number; column?: number }
+    public code: string,
+    public loc?: { line: number; column: number },
+    public id?: string
   ) {
     super(message)
-    this.name = 'BuildError'
+    this.name = 'MiniViteError'
+  }
+}
+
+export class BuildError extends MiniViteError {
+  constructor(message: string, id?: string, loc?: any) {
+    super(message, 'BUILD_ERROR', loc, id)
+  }
+}
+
+export class PluginError extends MiniViteError {
+  constructor(message: string, public plugin: string) {
+    super(`[${plugin}] ${message}`, 'PLUGIN_ERROR')
+  }
+}
+```
+
+**错误边界处理**
+```typescript
+async function safeExecute<T>(
+  operation: () => Promise<T>,
+  errorHandler: (error: Error) => T | Promise<T>
+): Promise<T> {
+  try {
+    return await operation()
+  } catch (error) {
+    if (error instanceof MiniViteError) {
+      throw error // 重新抛出已知错误
+    }
+    
+    // 处理未知错误
+    return await errorHandler(error)
   }
 }
 
 // 使用示例
-throw new BuildError(
-  'Failed to resolve module',
-  'MODULE_NOT_FOUND',
-  { file: '/src/main.js', line: 1, column: 10 }
+const result = await safeExecute(
+  () => transformModule(code, id),
+  (error) => {
+    logger.error(`Transform failed: ${error.message}`)
+    return { code, map: null }
+  }
 )
 ```
 
-**错误边界和恢复**：
+## 🚀 性能优化技巧
+
+### 1. 缓存策略设计
+
+**多级缓存架构**
 ```typescript
-async function safeTransform(code: string, id: string): Promise<TransformResult> {
-  try {
-    return await transform(code, id)
-  } catch (error) {
-    // 记录错误但不中断整个流程
-    logger.error(`Transform failed for ${id}:`, error)
-    
-    // 返回原始代码作为降级方案
-    return { code, map: null }
-  }
+interface CacheStrategy {
+  get(key: string): Promise<any>
+  set(key: string, value: any, ttl?: number): Promise<void>
+  invalidate(key: string): Promise<void>
 }
-```
 
-**渐进式错误处理**：
-```typescript
-// 插件错误不应该影响其他插件
-async function runPluginHooks(plugins: Plugin[], hookName: string, ...args: any[]) {
-  const results = []
+class HybridCache implements CacheStrategy {
+  constructor(
+    private memoryCache: MemoryCache,
+    private diskCache: DiskCache
+  ) {}
   
-  for (const plugin of plugins) {
-    try {
-      const result = await plugin[hookName]?.(...args)
-      if (result !== undefined) {
-        results.push(result)
-      }
-    } catch (error) {
-      logger.error(`Plugin ${plugin.name} ${hookName} error:`, error)
-      // 继续执行其他插件
-    }
-  }
-  
-  return results
-}
-```
-
-## 6.2 性能优化技巧
-
-### 缓存策略
-
-**模块级缓存**：
-```typescript
-class ModuleCache {
-  private cache = new Map<string, TransformResult>()
-  private timestamps = new Map<string, number>()
-  
-  get(id: string, timestamp: number): TransformResult | null {
-    const cached = this.cache.get(id)
-    const cachedTime = this.timestamps.get(id)
+  async get(key: string): Promise<any> {
+    // L1: 内存缓存 (最快)
+    let value = await this.memoryCache.get(key)
+    if (value !== undefined) return value
     
-    if (cached && cachedTime && cachedTime >= timestamp) {
-      return cached
+    // L2: 磁盘缓存 (较快)
+    value = await this.diskCache.get(key)
+    if (value !== undefined) {
+      // 回写到内存缓存
+      await this.memoryCache.set(key, value)
+      return value
     }
     
-    return null
+    return undefined
   }
   
-  set(id: string, result: TransformResult, timestamp: number): void {
-    this.cache.set(id, result)
-    this.timestamps.set(id, timestamp)
-  }
-  
-  invalidate(id: string): void {
-    this.cache.delete(id)
-    this.timestamps.delete(id)
+  async set(key: string, value: any, ttl?: number): Promise<void> {
+    // 同时写入两级缓存
+    await Promise.all([
+      this.memoryCache.set(key, value, ttl),
+      this.diskCache.set(key, value, ttl)
+    ])
   }
 }
 ```
 
-**文件系统缓存**：
+**智能缓存失效**
 ```typescript
-class FileSystemCache {
-  private cacheDir: string
+class SmartCache {
+  private dependencies = new Map<string, Set<string>>()
   
-  async get(key: string): Promise<any | null> {
-    const cachePath = join(this.cacheDir, `${key}.json`)
-    
-    try {
-      const content = await fs.readFile(cachePath, 'utf-8')
-      return JSON.parse(content)
-    } catch {
-      return null
+  addDependency(key: string, dependency: string) {
+    if (!this.dependencies.has(dependency)) {
+      this.dependencies.set(dependency, new Set())
+    }
+    this.dependencies.get(dependency)!.add(key)
+  }
+  
+  async invalidateByDependency(dependency: string) {
+    const dependents = this.dependencies.get(dependency)
+    if (dependents) {
+      await Promise.all(
+        Array.from(dependents).map(key => this.invalidate(key))
+      )
     }
   }
-  
-  async set(key: string, value: any): Promise<void> {
-    const cachePath = join(this.cacheDir, `${key}.json`)
-    await ensureDir(dirname(cachePath))
-    await fs.writeFile(cachePath, JSON.stringify(value), 'utf-8')
-  }
 }
 ```
 
-### 并发控制
+### 2. 并发处理优化
 
-**限制并发数量**：
+**请求去重**
 ```typescript
-class ConcurrencyLimiter {
-  private running = 0
-  private queue: Array<() => void> = []
+class RequestDeduplicator {
+  private pending = new Map<string, Promise<any>>()
   
-  constructor(private limit: number) {}
+  async execute<T>(key: string, operation: () => Promise<T>): Promise<T> {
+    // 如果已有相同请求在处理，直接返回
+    if (this.pending.has(key)) {
+      return this.pending.get(key) as Promise<T>
+    }
+    
+    const promise = operation().finally(() => {
+      this.pending.delete(key)
+    })
+    
+    this.pending.set(key, promise)
+    return promise
+  }
+}
+
+// 使用示例
+const deduplicator = new RequestDeduplicator()
+
+async function transformModule(id: string): Promise<TransformResult> {
+  return deduplicator.execute(`transform:${id}`, async () => {
+    // 实际转换逻辑
+    return await doTransform(id)
+  })
+}
+```
+
+**并行处理池**
+```typescript
+class WorkerPool<T, R> {
+  private workers: Worker[] = []
+  private queue: Array<{ task: T; resolve: (result: R) => void; reject: (error: Error) => void }> = []
   
-  async run<T>(task: () => Promise<T>): Promise<T> {
+  constructor(
+    private workerCount: number,
+    private workerFactory: () => Worker
+  ) {
+    this.initWorkers()
+  }
+  
+  async execute(task: T): Promise<R> {
     return new Promise((resolve, reject) => {
-      const execute = async () => {
-        this.running++
-        
-        try {
-          const result = await task()
-          resolve(result)
-        } catch (error) {
-          reject(error)
-        } finally {
-          this.running--
-          this.processQueue()
-        }
-      }
-      
-      if (this.running < this.limit) {
-        execute()
+      this.queue.push({ task, resolve, reject })
+      this.processQueue()
+    })
+  }
+  
+  private processQueue() {
+    if (this.queue.length === 0) return
+    
+    const availableWorker = this.workers.find(w => w.isIdle)
+    if (availableWorker) {
+      const { task, resolve, reject } = this.queue.shift()!
+      availableWorker.execute(task).then(resolve).catch(reject)
+    }
+  }
+}
+```
+
+### 3. 内存管理优化
+
+**对象池模式**
+```typescript
+class ObjectPool<T> {
+  private pool: T[] = []
+  private createFn: () => T
+  private resetFn: (obj: T) => void
+  
+  constructor(createFn: () => T, resetFn: (obj: T) => void, initialSize = 10) {
+    this.createFn = createFn
+    this.resetFn = resetFn
+    
+    // 预创建对象
+    for (let i = 0; i < initialSize; i++) {
+      this.pool.push(createFn())
+    }
+  }
+  
+  acquire(): T {
+    return this.pool.pop() || this.createFn()
+  }
+  
+  release(obj: T) {
+    this.resetFn(obj)
+    this.pool.push(obj)
+  }
+}
+
+// 使用示例：复用 Transform 上下文
+const transformContextPool = new ObjectPool(
+  () => ({ code: '', map: null, id: '' }),
+  (ctx) => { ctx.code = ''; ctx.map = null; ctx.id = '' }
+)
+```
+
+## 🔧 可维护性设计
+
+### 1. 配置管理最佳实践
+
+**类型安全的配置**
+```typescript
+// 使用 TypeScript 严格类型检查
+interface StrictConfig {
+  readonly root: string
+  readonly base: string
+  readonly build: Readonly<{
+    outDir: string
+    sourcemap: boolean
+    minify: 'esbuild' | 'terser' | false
+  }>
+}
+
+// 配置验证
+function validateConfig(config: any): asserts config is StrictConfig {
+  if (typeof config.root !== 'string') {
+    throw new Error('config.root must be a string')
+  }
+  
+  if (!['esbuild', 'terser', false].includes(config.build?.minify)) {
+    throw new Error('config.build.minify must be "esbuild", "terser", or false')
+  }
+}
+
+// 配置默认值合并
+function mergeConfig<T extends Record<string, any>>(
+  defaults: T,
+  overrides: Partial<T>
+): T {
+  const result = { ...defaults }
+  
+  for (const [key, value] of Object.entries(overrides)) {
+    if (value !== undefined) {
+      if (typeof value === 'object' && !Array.isArray(value)) {
+        result[key] = mergeConfig(result[key] || {}, value)
       } else {
-        this.queue.push(execute)
-      }
-    })
-  }
-  
-  private processQueue(): void {
-    if (this.queue.length > 0 && this.running < this.limit) {
-      const next = this.queue.shift()!
-      next()
-    }
-  }
-}
-
-// 使用示例
-const limiter = new ConcurrencyLimiter(5)
-
-async function transformFiles(files: string[]) {
-  const promises = files.map(file => 
-    limiter.run(() => transformFile(file))
-  )
-  
-  return Promise.all(promises)
-}
-```
-
-### 内存管理
-
-**及时清理资源**：
-```typescript
-class ResourceManager {
-  private resources = new Set<{ dispose(): void }>()
-  
-  register<T extends { dispose(): void }>(resource: T): T {
-    this.resources.add(resource)
-    return resource
-  }
-  
-  dispose(): void {
-    for (const resource of this.resources) {
-      try {
-        resource.dispose()
-      } catch (error) {
-        console.error('Failed to dispose resource:', error)
+        result[key] = value
       }
     }
-    this.resources.clear()
-  }
-}
-
-// 在服务器关闭时清理资源
-process.on('SIGTERM', () => {
-  resourceManager.dispose()
-  process.exit(0)
-})
-```
-
-## 6.3 可维护性设计
-
-### 配置验证
-
-**类型安全的配置**：
-```typescript
-import Joi from 'joi'
-
-const configSchema = Joi.object({
-  root: Joi.string().default(process.cwd()),
-  base: Joi.string().default('/'),
-  server: Joi.object({
-    port: Joi.number().min(1).max(65535).default(3000),
-    host: Joi.string().default('localhost'),
-    open: Joi.boolean().default(false),
-  }).default({}),
-  build: Joi.object({
-    outDir: Joi.string().default('dist'),
-    sourcemap: Joi.boolean().default(false),
-    minify: Joi.boolean().default(true),
-  }).default({}),
-})
-
-export function validateConfig(config: any): MiniViteConfig {
-  const { error, value } = configSchema.validate(config)
-  
-  if (error) {
-    throw new Error(`Invalid configuration: ${error.message}`)
   }
   
-  return value
-}
-```
-
-### 插件开发规范
-
-**插件模板**：
-```typescript
-export interface PluginOptions {
-  // 插件选项类型定义
-}
-
-export function createMyPlugin(options: PluginOptions = {}): Plugin {
-  return {
-    name: 'my-plugin',
-    
-    configResolved(config) {
-      // 配置解析完成后的初始化
-    },
-    
-    async resolveId(id, importer) {
-      // 模块解析逻辑
-      return null
-    },
-    
-    async load(id) {
-      // 模块加载逻辑
-      return null
-    },
-    
-    async transform(code, id) {
-      // 代码转换逻辑
-      return null
-    },
-  }
-}
-```
-
-**插件测试模式**：
-```typescript
-// 插件单元测试
-describe('MyPlugin', () => {
-  it('should transform code correctly', async () => {
-    const plugin = createMyPlugin()
-    const result = await plugin.transform!('input code', '/test.js')
-    
-    expect(result).toEqual({
-      code: 'expected output',
-      map: null,
-    })
-  })
-})
-
-// 集成测试
-describe('Plugin Integration', () => {
-  it('should work with plugin container', async () => {
-    const container = new PluginContainer(config, [createMyPlugin()])
-    const result = await container.transform('input', '/test.js')
-    
-    expect(result).toBeDefined()
-  })
-})
-```
-
-### 日志和调试
-
-**结构化日志**：
-```typescript
-interface LogContext {
-  plugin?: string
-  file?: string
-  timestamp?: number
-  [key: string]: any
-}
-
-class StructuredLogger {
-  info(message: string, context: LogContext = {}) {
-    this.log('info', message, context)
-  }
-  
-  error(message: string, context: LogContext = {}) {
-    this.log('error', message, context)
-  }
-  
-  private log(level: string, message: string, context: LogContext) {
-    const entry = {
-      level,
-      message,
-      timestamp: Date.now(),
-      ...context,
-    }
-    
-    console.log(JSON.stringify(entry))
-  }
-}
-```
-
-**调试工具**：
-```typescript
-export function createDebugger(namespace: string) {
-  const enabled = process.env.DEBUG?.includes(namespace) || process.env.DEBUG === '*'
-  
-  return (message: string, ...args: any[]) => {
-    if (enabled) {
-      console.log(`[${namespace}] ${message}`, ...args)
-    }
-  }
-}
-
-// 使用示例
-const debug = createDebugger('mini-vite:transform')
-
-async function transform(code: string, id: string) {
-  debug('Transforming %s', id)
-  debug('Input length: %d', code.length)
-  
-  const result = await doTransform(code, id)
-  
-  debug('Output length: %d', result.code.length)
   return result
 }
 ```
 
-## 6.4 测试策略
+### 2. 插件系统设计
 
-### 单元测试
-
-**工具函数测试**：
+**插件生命周期管理**
 ```typescript
-describe('Utils', () => {
-  describe('normalizePath', () => {
-    it('should convert backslashes to forward slashes', () => {
-      expect(normalizePath('src\\main.js')).toBe('src/main.js')
-    })
+class PluginManager {
+  private plugins: Plugin[] = []
+  private hooks = new Map<string, Function[]>()
+  
+  register(plugin: Plugin) {
+    this.plugins.push(plugin)
     
-    it('should handle already normalized paths', () => {
-      expect(normalizePath('src/main.js')).toBe('src/main.js')
+    // 注册钩子函数
+    Object.keys(plugin).forEach(key => {
+      if (typeof plugin[key] === 'function' && key !== 'name') {
+        if (!this.hooks.has(key)) {
+          this.hooks.set(key, [])
+        }
+        this.hooks.get(key)!.push(plugin[key].bind(plugin))
+      }
     })
-  })
+  }
   
-  describe('cleanUrl', () => {
-    it('should remove query parameters', () => {
-      expect(cleanUrl('/main.js?t=123')).toBe('/main.js')
-    })
+  async callHook(hookName: string, ...args: any[]): Promise<any[]> {
+    const hooks = this.hooks.get(hookName) || []
+    const results = []
     
-    it('should remove hash fragments', () => {
-      expect(cleanUrl('/main.js#section')).toBe('/main.js')
-    })
-  })
-})
-```
-
-### 集成测试
-
-**端到端测试**：
-```typescript
-describe('Mini Vite Integration', () => {
-  let server: DevServer
-  
-  beforeEach(async () => {
-    const config = await resolveConfig({
-      root: '/tmp/test-project',
-      server: { port: 0 }, // 随机端口
-    })
+    for (const hook of hooks) {
+      try {
+        const result = await hook(...args)
+        if (result !== undefined) {
+          results.push(result)
+        }
+      } catch (error) {
+        console.error(`Plugin hook ${hookName} failed:`, error)
+        throw error
+      }
+    }
     
-    server = await createDevServer(config)
-    await server.listen()
-  })
-  
-  afterEach(async () => {
-    await server.close()
-  })
-  
-  it('should serve JavaScript files', async () => {
-    const response = await fetch(`http://localhost:${server.port}/main.js`)
-    expect(response.status).toBe(200)
-    expect(response.headers.get('content-type')).toContain('javascript')
-  })
-  
-  it('should transform TypeScript files', async () => {
-    const response = await fetch(`http://localhost:${server.port}/main.ts`)
-    const code = await response.text()
-    
-    expect(code).not.toContain('interface') // TypeScript 语法应该被转换
-    expect(code).toContain('export') // ES 模块语法应该保留
-  })
-})
-```
-
-## 6.5 文档和示例
-
-### API 文档规范
-
-```typescript
-/**
- * 创建开发服务器
- * 
- * @param config - 解析后的配置对象
- * @returns Promise<DevServer> - 开发服务器实例
- * 
- * @example
- * ```typescript
- * const config = await resolveConfig({ root: './src' })
- * const server = await createDevServer(config)
- * await server.listen(3000)
- * ```
- */
-export async function createDevServer(config: ResolvedConfig): Promise<DevServer> {
-  // 实现
+    return results
+  }
 }
 ```
 
-### 示例项目结构
+**插件通信机制**
+```typescript
+interface PluginContext {
+  emitFile(fileName: string, source: string): string
+  resolve(id: string, importer?: string): Promise<string | null>
+  getModuleInfo(id: string): ModuleInfo | null
+  warn(message: string): void
+  error(message: string): never
+}
+
+function createPluginContext(
+  config: ResolvedConfig,
+  moduleGraph: ModuleGraph
+): PluginContext {
+  return {
+    emitFile(fileName: string, source: string): string {
+      // 生成文件并返回引用 ID
+      return generateAssetId(fileName, source)
+    },
+    
+    async resolve(id: string, importer?: string) {
+      return await moduleGraph.resolveId(id, importer)
+    },
+    
+    getModuleInfo(id: string) {
+      return moduleGraph.getModuleById(id)
+    },
+    
+    warn(message: string) {
+      config.logger.warn(message)
+    },
+    
+    error(message: string): never {
+      throw new PluginError(message, 'unknown')
+    }
+  }
+}
+```
+
+### 3. 测试策略
+
+**单元测试结构**
+```typescript
+// 测试工具函数
+describe('Utils', () => {
+  describe('normalizePath', () => {
+    it('should normalize Windows paths', () => {
+      expect(normalizePath('C:\\Users\\test')).toBe('C:/Users/test')
+    })
+    
+    it('should handle relative paths', () => {
+      expect(normalizePath('./src/../dist')).toBe('dist')
+    })
+  })
+})
+
+// 测试核心功能
+describe('ModuleGraph', () => {
+  let moduleGraph: ModuleGraph
+  
+  beforeEach(() => {
+    moduleGraph = new ModuleGraphImpl()
+  })
+  
+  it('should track module dependencies', () => {
+    const mod1 = moduleGraph.createModule('/src/a.js')
+    const mod2 = moduleGraph.createModule('/src/b.js')
+    
+    moduleGraph.addImportedModule(mod1, mod2)
+    
+    expect(mod1.importedModules.has(mod2)).toBe(true)
+    expect(mod2.importers.has(mod1)).toBe(true)
+  })
+})
+```
+
+**集成测试**
+```typescript
+describe('DevServer Integration', () => {
+  let server: DevServer
+  let tempDir: string
+  
+  beforeAll(async () => {
+    tempDir = await createTempDir()
+    await writeFile(join(tempDir, 'index.html'), '<div>test</div>')
+    await writeFile(join(tempDir, 'main.js'), 'console.log("test")')
+  })
+  
+  afterAll(async () => {
+    await server?.close()
+    await removeTempDir(tempDir)
+  })
+  
+  it('should serve static files', async () => {
+    const config = await resolveConfig({ root: tempDir })
+    server = await createDevServer(config)
+    await server.listen(0) // 随机端口
+    
+    const response = await fetch(`http://localhost:${server.port}/index.html`)
+    expect(response.status).toBe(200)
+    expect(await response.text()).toContain('<div>test</div>')
+  })
+})
+```
+
+## 🧪 测试策略
+
+### 1. 测试金字塔
 
 ```
-examples/
-├── basic/              # 基础 JavaScript 项目
-├── typescript/         # TypeScript 项目
-├── react/             # React 项目
-├── vue/               # Vue 项目
-└── custom-plugin/     # 自定义插件示例
+    /\
+   /  \     E2E Tests (少量)
+  /____\    - 完整流程测试
+ /      \   - 用户场景验证
+/________\  
+           Integration Tests (适量)
+          - 模块间协作测试
+         - API 集成测试
+        
+        Unit Tests (大量)
+       - 函数级别测试
+      - 边界条件测试
 ```
 
-这些最佳实践确保了代码的质量、性能和可维护性，为项目的长期发展奠定了坚实的基础。
+### 2. Mock 策略
+
+**文件系统 Mock**
+```typescript
+import { vi } from 'vitest'
+
+// Mock fs 模块
+vi.mock('fs', () => ({
+  readFile: vi.fn(),
+  writeFile: vi.fn(),
+  stat: vi.fn(),
+  watch: vi.fn()
+}))
+
+// 测试中使用
+it('should handle file read errors', async () => {
+  const mockReadFile = vi.mocked(fs.readFile)
+  mockReadFile.mockRejectedValue(new Error('File not found'))
+  
+  await expect(loadModule('/nonexistent.js')).rejects.toThrow('File not found')
+})
+```
+
+### 3. 性能测试
+
+**基准测试**
+```typescript
+import { performance } from 'perf_hooks'
+
+describe('Performance', () => {
+  it('should transform modules within acceptable time', async () => {
+    const code = generateLargeCode(10000) // 生成大型代码
+    
+    const start = performance.now()
+    await transformModule(code, '/test.js')
+    const duration = performance.now() - start
+    
+    expect(duration).toBeLessThan(100) // 100ms 内完成
+  })
+  
+  it('should handle concurrent requests efficiently', async () => {
+    const requests = Array.from({ length: 100 }, (_, i) => 
+      transformModule(`console.log(${i})`, `/test${i}.js`)
+    )
+    
+    const start = performance.now()
+    await Promise.all(requests)
+    const duration = performance.now() - start
+    
+    expect(duration).toBeLessThan(1000) // 1秒内完成100个请求
+  })
+})
+```
+
+## 📊 监控和调试
+
+### 1. 性能监控
+
+**指标收集**
+```typescript
+class MetricsCollector {
+  private metrics = new Map<string, number[]>()
+  
+  record(name: string, value: number) {
+    if (!this.metrics.has(name)) {
+      this.metrics.set(name, [])
+    }
+    this.metrics.get(name)!.push(value)
+  }
+  
+  getStats(name: string) {
+    const values = this.metrics.get(name) || []
+    if (values.length === 0) return null
+    
+    const sorted = [...values].sort((a, b) => a - b)
+    return {
+      count: values.length,
+      min: sorted[0],
+      max: sorted[sorted.length - 1],
+      avg: values.reduce((a, b) => a + b) / values.length,
+      p50: sorted[Math.floor(sorted.length * 0.5)],
+      p95: sorted[Math.floor(sorted.length * 0.95)],
+      p99: sorted[Math.floor(sorted.length * 0.99)]
+    }
+  }
+}
+```
+
+### 2. 调试工具
+
+**开发者面板**
+```typescript
+function setupDevPanel(server: DevServer) {
+  server.middlewares.use('/__dev-panel', (req, res) => {
+    const html = `
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Mini Vite Dev Panel</title>
+  <style>
+    body { font-family: monospace; margin: 20px; }
+    .metric { margin: 10px 0; padding: 10px; background: #f5f5f5; }
+  </style>
+</head>
+<body>
+  <h1>Mini Vite Development Panel</h1>
+  
+  <h2>Module Graph</h2>
+  <div id="module-graph"></div>
+  
+  <h2>Performance Metrics</h2>
+  <div id="metrics"></div>
+  
+  <script>
+    // 实时更新数据
+    setInterval(async () => {
+      const [modules, metrics] = await Promise.all([
+        fetch('/__dev-panel/modules').then(r => r.json()),
+        fetch('/__dev-panel/metrics').then(r => r.json())
+      ])
+      
+      document.getElementById('module-graph').innerHTML = 
+        modules.map(m => \`<div>\${m.id} (\${m.importers.length} importers)</div>\`).join('')
+      
+      document.getElementById('metrics').innerHTML = 
+        Object.entries(metrics).map(([name, stats]) => 
+          \`<div class="metric">\${name}: \${JSON.stringify(stats)}</div>\`
+        ).join('')
+    }, 1000)
+  </script>
+</body>
+</html>
+`
+    res.setHeader('Content-Type', 'text/html')
+    res.end(html)
+  })
+}
+```
+
+## 🎯 总结
+
+### 核心原则
+
+1. **简单性优于复杂性**: 优先选择简单直接的解决方案
+2. **可测试性**: 设计时考虑如何测试
+3. **可扩展性**: 为未来的功能扩展留下空间
+4. **性能意识**: 在关键路径上优化性能
+5. **错误处理**: 提供清晰的错误信息和恢复机制
+
+### 开发流程
+
+1. **设计先行**: 先设计接口和架构，再实现细节
+2. **测试驱动**: 编写测试用例，确保功能正确
+3. **渐进优化**: 先实现功能，再优化性能
+4. **持续重构**: 定期重构代码，保持代码质量
+5. **文档同步**: 及时更新文档，保持文档与代码同步
+
+### 质量保证
+
+1. **代码审查**: 通过代码审查发现问题
+2. **自动化测试**: 建立完善的测试体系
+3. **性能监控**: 持续监控性能指标
+4. **用户反馈**: 收集用户反馈，持续改进
+
+## 🚀 下一步
+
+现在您已经掌握了开发高质量构建工具的最佳实践，最后让我们：
+
+1. **[探索扩展方向](./07-future-improvements.md)** - 思考未来的改进和扩展
+
+通过这些最佳实践，您可以构建出高质量、可维护的现代构建工具！🎉

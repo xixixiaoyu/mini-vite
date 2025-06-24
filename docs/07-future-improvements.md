@@ -1,572 +1,816 @@
-# 7. 扩展方向和改进建议
+# 扩展方向和改进建议
 
-## 7.1 功能扩展思路
+## 🌟 功能扩展思路
 
-### 7.1.1 更多文件类型支持
+### 1. 框架集成支持
 
-**Vue 单文件组件支持**：
+**Vue.js 支持**
 ```typescript
+// Vue SFC 插件
 export function vuePlugin(): Plugin {
   return {
     name: 'vue',
-    async load(id) {
+    async transform(code: string, id: string) {
       if (!id.endsWith('.vue')) return null
       
-      const content = await readFile(id)
       // 解析 Vue SFC
-      const { descriptor } = parse(content)
+      const { descriptor } = parse(code)
       
-      // 生成 JavaScript 代码
-      return generateVueCode(descriptor)
+      // 处理 <template>
+      const templateCode = descriptor.template 
+        ? await compileTemplate(descriptor.template.content)
+        : ''
+      
+      // 处理 <script>
+      const scriptCode = descriptor.script?.content || ''
+      
+      // 处理 <style>
+      const styleCode = descriptor.styles
+        .map(style => style.content)
+        .join('\n')
+      
+      // 组合最终代码
+      return {
+        code: `
+${scriptCode}
+${templateCode}
+if (import.meta.hot) {
+  __VUE_HMR_RUNTIME__.updateComponent('${id}', __default__)
+}
+export default __default__
+`,
+        map: null
+      }
     }
   }
 }
 ```
 
-**React JSX 增强支持**：
+**React 支持增强**
 ```typescript
 export function reactPlugin(): Plugin {
   return {
     name: 'react',
-    async transform(code, id) {
+    async transform(code: string, id: string) {
       if (!/\.(jsx|tsx)$/.test(id)) return null
       
-      // 自动注入 React import
-      if (code.includes('<') && !code.includes('import React')) {
-        code = `import React from 'react'\n${code}`
+      const result = await transform(code, {
+        loader: id.endsWith('.tsx') ? 'tsx' : 'jsx',
+        jsx: 'automatic',
+        jsxImportSource: 'react',
+        target: 'es2020'
+      })
+      
+      // 添加 React Fast Refresh 支持
+      if (code.includes('export default')) {
+        result.code += `
+if (import.meta.hot) {
+  import.meta.hot.accept()
+  if (typeof __default__ === 'function') {
+    window.$RefreshReg$(__default__, '${id}')
+  }
+}
+`
       }
       
-      return esbuildTransform(code, {
-        loader: 'jsx',
-        jsx: 'automatic', // 使用新的 JSX 转换
-      })
+      return result
     }
   }
 }
 ```
 
-**Svelte 组件支持**：
-```typescript
-export function sveltePlugin(): Plugin {
-  return {
-    name: 'svelte',
-    async transform(code, id) {
-      if (!id.endsWith('.svelte')) return null
-      
-      const { compile } = await import('svelte/compiler')
-      const result = compile(code, {
-        filename: id,
-        format: 'esm',
-      })
-      
-      return {
-        code: result.js.code,
-        map: result.js.map,
-      }
-    }
-  }
-}
-```
+### 2. CSS 预处理器支持
 
-### 7.1.2 CSS 预处理器集成
-
-**Sass/SCSS 支持**：
+**Sass/SCSS 支持**
 ```typescript
+import * as sass from 'sass'
+
 export function sassPlugin(): Plugin {
   return {
     name: 'sass',
-    async transform(code, id) {
-      if (!/\.(sass|scss)$/.test(id)) return null
+    async transform(code: string, id: string) {
+      if (!/\.(scss|sass)$/.test(id)) return null
       
-      const sass = await import('sass')
-      const result = sass.compile(id, {
-        sourceMap: true,
-        style: 'expanded',
-      })
-      
-      // 转换为 CSS 模块
-      return cssToJsModule(result.css, result.sourceMap)
+      try {
+        const result = sass.compileString(code, {
+          syntax: id.endsWith('.sass') ? 'indented' : 'scss',
+          loadPaths: [dirname(id), 'node_modules'],
+          sourceMap: true
+        })
+        
+        // 转换为 JS 模块
+        return {
+          code: `
+const css = ${JSON.stringify(result.css)}
+updateStyle(${JSON.stringify(id)}, css)
+export default css
+`,
+          map: result.sourceMap
+        }
+      } catch (error) {
+        throw new Error(`Sass compilation failed: ${error.message}`)
+      }
     }
   }
 }
 ```
 
-**PostCSS 集成**：
+**PostCSS 集成**
 ```typescript
 export function postcssPlugin(options: PostCSSOptions = {}): Plugin {
   return {
     name: 'postcss',
-    async transform(code, id) {
-      if (!isCSSRequest(id)) return null
+    async transform(code: string, id: string) {
+      if (!id.endsWith('.css')) return null
       
-      const postcss = await import('postcss')
-      const processor = postcss(options.plugins || [])
+      const postcss = (await import('postcss')).default
+      const plugins = options.plugins || [
+        require('autoprefixer'),
+        require('cssnano')({ preset: 'default' })
+      ]
       
-      const result = await processor.process(code, {
+      const result = await postcss(plugins).process(code, {
         from: id,
         to: id,
-        map: { inline: false },
+        map: { inline: false }
       })
       
-      return cssToJsModule(result.css, result.map?.toString())
+      return {
+        code: `
+const css = ${JSON.stringify(result.css)}
+updateStyle(${JSON.stringify(id)}, css)
+export default css
+`,
+        map: result.map?.toString()
+      }
     }
   }
 }
 ```
 
-### 7.1.3 高级构建功能
+### 3. 高级构建优化
 
-**代码分割优化**：
+**代码分割优化**
 ```typescript
-export function advancedChunkingPlugin(): Plugin {
+export function advancedSplittingPlugin(): Plugin {
   return {
-    name: 'advanced-chunking',
+    name: 'advanced-splitting',
     generateBundle(opts, bundle) {
       // 分析模块依赖关系
-      const moduleGraph = analyzeModuleDependencies(bundle)
+      const moduleGraph = this.getModuleGraph()
       
-      // 智能分割策略
-      const chunks = calculateOptimalChunks(moduleGraph, {
-        maxChunkSize: 500 * 1024, // 500KB
-        minChunkSize: 20 * 1024,  // 20KB
-        maxParallelRequests: 6,
-      })
+      // 自动分割策略
+      const chunks = {
+        // 第三方库
+        vendor: new Set<string>(),
+        // 公共模块
+        common: new Set<string>(),
+        // 路由级别的代码分割
+        routes: new Map<string, Set<string>>()
+      }
+      
+      // 分析并分组模块
+      for (const [id, module] of moduleGraph.entries()) {
+        if (id.includes('node_modules')) {
+          chunks.vendor.add(id)
+        } else if (module.importers.size > 2) {
+          chunks.common.add(id)
+        } else if (id.includes('/routes/')) {
+          const route = extractRouteName(id)
+          if (!chunks.routes.has(route)) {
+            chunks.routes.set(route, new Set())
+          }
+          chunks.routes.get(route)!.add(id)
+        }
+      }
       
       // 应用分割策略
-      applyChunkingStrategy(bundle, chunks)
+      this.emitChunks(chunks)
     }
   }
 }
 ```
 
-**Tree Shaking 增强**：
+**Tree Shaking 增强**
 ```typescript
 export function enhancedTreeShakingPlugin(): Plugin {
   return {
     name: 'enhanced-tree-shaking',
-    transform(code, id) {
+    transform(code: string, id: string) {
       // 分析副作用
-      const sideEffects = analyzeSideEffects(code, id)
+      const sideEffects = analyzeSideEffects(code)
       
       // 标记纯函数
-      const pureFunctions = markPureFunctions(code)
+      const pureFunctions = analyzePureFunctions(code)
       
-      // 添加 Tree Shaking 提示
-      return addTreeShakingHints(code, {
-        sideEffects,
-        pureFunctions,
+      // 添加注释帮助 Rollup 优化
+      let transformedCode = code
+      
+      pureFunctions.forEach(func => {
+        transformedCode = transformedCode.replace(
+          func.declaration,
+          `/*#__PURE__*/ ${func.declaration}`
+        )
+      })
+      
+      return {
+        code: transformedCode,
+        map: null,
+        meta: {
+          sideEffects,
+          pureFunctions
+        }
+      }
+    }
+  }
+}
+```
+
+### 4. 开发体验增强
+
+**错误边界和恢复**
+```typescript
+export function errorBoundaryPlugin(): Plugin {
+  return {
+    name: 'error-boundary',
+    configureServer(server) {
+      // 注入错误边界客户端代码
+      server.middlewares.use((req, res, next) => {
+        if (req.url === '/@error-boundary/client.js') {
+          res.setHeader('Content-Type', 'application/javascript')
+          res.end(`
+class ErrorBoundary {
+  constructor() {
+    this.setupGlobalErrorHandler()
+    this.setupUnhandledRejectionHandler()
+  }
+  
+  setupGlobalErrorHandler() {
+    window.addEventListener('error', (event) => {
+      this.handleError(event.error)
+    })
+  }
+  
+  setupUnhandledRejectionHandler() {
+    window.addEventListener('unhandledrejection', (event) => {
+      this.handleError(event.reason)
+    })
+  }
+  
+  handleError(error) {
+    // 发送错误到开发服务器
+    fetch('/__error-report', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        message: error.message,
+        stack: error.stack,
+        timestamp: Date.now()
+      })
+    })
+    
+    // 显示友好的错误界面
+    this.showErrorOverlay(error)
+  }
+  
+  showErrorOverlay(error) {
+    const overlay = document.createElement('div')
+    overlay.innerHTML = \`
+      <div style="position: fixed; top: 0; left: 0; right: 0; bottom: 0; 
+                  background: rgba(0,0,0,0.8); color: white; padding: 20px;
+                  font-family: monospace; z-index: 9999;">
+        <h2>🚨 Runtime Error</h2>
+        <pre>\${error.stack}</pre>
+        <button onclick="this.parentElement.remove()">Close</button>
+      </div>
+    \`
+    document.body.appendChild(overlay)
+  }
+}
+
+new ErrorBoundary()
+`)
+        } else {
+          next()
+        }
       })
     }
   }
 }
 ```
 
-## 7.2 性能优化方向
+## 📈 性能优化方向
 
-### 7.2.1 缓存系统优化
+### 1. 编译性能优化
 
-**分层缓存架构**：
+**多线程编译**
 ```typescript
-interface CacheLayer {
-  get(key: string): Promise<any | null>
-  set(key: string, value: any, ttl?: number): Promise<void>
-  invalidate(pattern: string): Promise<void>
-}
+import { Worker } from 'worker_threads'
 
-class MultiLayerCache {
-  constructor(
-    private memoryCache: CacheLayer,
-    private diskCache: CacheLayer,
-    private remoteCache?: CacheLayer
-  ) {}
+class MultiThreadTransformer {
+  private workers: Worker[] = []
+  private taskQueue: TransformTask[] = []
   
-  async get(key: string): Promise<any | null> {
-    // 内存缓存
-    let value = await this.memoryCache.get(key)
-    if (value) return value
+  constructor(workerCount = require('os').cpus().length) {
+    for (let i = 0; i < workerCount; i++) {
+      this.createWorker()
+    }
+  }
+  
+  private createWorker() {
+    const worker = new Worker(`
+const { parentPort } = require('worker_threads')
+const { transform } = require('esbuild')
+
+parentPort.on('message', async ({ id, code, options }) => {
+  try {
+    const result = await transform(code, options)
+    parentPort.postMessage({ id, result })
+  } catch (error) {
+    parentPort.postMessage({ id, error: error.message })
+  }
+})
+`, { eval: true })
     
-    // 磁盘缓存
-    value = await this.diskCache.get(key)
-    if (value) {
-      await this.memoryCache.set(key, value)
-      return value
+    worker.on('message', this.handleWorkerMessage.bind(this))
+    this.workers.push(worker)
+  }
+  
+  async transform(code: string, id: string, options: any): Promise<TransformResult> {
+    return new Promise((resolve, reject) => {
+      const taskId = Math.random().toString(36)
+      
+      this.taskQueue.push({
+        id: taskId,
+        code,
+        options,
+        resolve,
+        reject
+      })
+      
+      this.processQueue()
+    })
+  }
+}
+```
+
+**增量编译**
+```typescript
+class IncrementalCompiler {
+  private cache = new Map<string, CompileResult>()
+  private dependencyGraph = new Map<string, Set<string>>()
+  
+  async compile(files: string[]): Promise<CompileResult[]> {
+    const changedFiles = this.getChangedFiles(files)
+    const affectedFiles = this.getAffectedFiles(changedFiles)
+    
+    // 只编译受影响的文件
+    const results = await Promise.all(
+      affectedFiles.map(file => this.compileFile(file))
+    )
+    
+    return results
+  }
+  
+  private getAffectedFiles(changedFiles: string[]): string[] {
+    const affected = new Set(changedFiles)
+    
+    for (const file of changedFiles) {
+      this.propagateChanges(file, affected)
     }
     
-    // 远程缓存
-    if (this.remoteCache) {
-      value = await this.remoteCache.get(key)
-      if (value) {
-        await this.diskCache.set(key, value)
-        await this.memoryCache.set(key, value)
-        return value
+    return Array.from(affected)
+  }
+  
+  private propagateChanges(file: string, affected: Set<string>) {
+    const dependents = this.dependencyGraph.get(file) || new Set()
+    
+    for (const dependent of dependents) {
+      if (!affected.has(dependent)) {
+        affected.add(dependent)
+        this.propagateChanges(dependent, affected)
       }
+    }
+  }
+}
+```
+
+### 2. 运行时性能优化
+
+**模块预加载**
+```typescript
+export function modulePreloadPlugin(): Plugin {
+  return {
+    name: 'module-preload',
+    generateBundle(opts, bundle) {
+      // 分析模块依赖关系
+      const moduleGraph = this.analyzeModuleDependencies(bundle)
+      
+      // 生成预加载清单
+      const preloadManifest = this.generatePreloadManifest(moduleGraph)
+      
+      // 注入预加载脚本
+      this.emitFile({
+        type: 'asset',
+        fileName: 'preload-manifest.json',
+        source: JSON.stringify(preloadManifest)
+      })
+      
+      // 在 HTML 中添加预加载链接
+      this.transformIndexHtml((html) => {
+        const preloadLinks = preloadManifest.critical
+          .map(module => `<link rel="modulepreload" href="${module}">`)
+          .join('\n')
+        
+        return html.replace('<head>', `<head>\n${preloadLinks}`)
+      })
+    }
+  }
+}
+```
+
+**智能缓存策略**
+```typescript
+class SmartCacheStrategy {
+  private cache = new Map<string, CacheEntry>()
+  private accessPattern = new Map<string, AccessInfo>()
+  
+  async get(key: string): Promise<any> {
+    this.recordAccess(key)
+    
+    const entry = this.cache.get(key)
+    if (entry && !this.isExpired(entry)) {
+      return entry.value
     }
     
     return null
   }
-}
-```
-
-**智能缓存失效**：
-```typescript
-class SmartCacheInvalidation {
-  private dependencyGraph = new Map<string, Set<string>>()
   
-  addDependency(file: string, dependency: string): void {
-    if (!this.dependencyGraph.has(file)) {
-      this.dependencyGraph.set(file, new Set())
-    }
-    this.dependencyGraph.get(file)!.add(dependency)
-  }
-  
-  invalidate(changedFile: string): Set<string> {
-    const toInvalidate = new Set<string>()
-    const visited = new Set<string>()
-    
-    const traverse = (file: string) => {
-      if (visited.has(file)) return
-      visited.add(file)
-      toInvalidate.add(file)
-      
-      // 查找依赖此文件的其他文件
-      for (const [dependent, deps] of this.dependencyGraph) {
-        if (deps.has(file)) {
-          traverse(dependent)
-        }
-      }
+  private recordAccess(key: string) {
+    const info = this.accessPattern.get(key) || {
+      count: 0,
+      lastAccess: 0,
+      frequency: 0
     }
     
-    traverse(changedFile)
-    return toInvalidate
-  }
-}
-```
-
-### 7.2.2 并行处理优化
-
-**Worker 线程池**：
-```typescript
-import { Worker } from 'worker_threads'
-
-class WorkerPool {
-  private workers: Worker[] = []
-  private queue: Array<{
-    task: any
-    resolve: (value: any) => void
-    reject: (error: any) => void
-  }> = []
-  
-  constructor(private workerScript: string, private poolSize: number) {
-    this.initializeWorkers()
+    info.count++
+    info.lastAccess = Date.now()
+    info.frequency = info.count / (Date.now() - info.firstAccess || 1)
+    
+    this.accessPattern.set(key, info)
   }
   
-  private initializeWorkers(): void {
-    for (let i = 0; i < this.poolSize; i++) {
-      const worker = new Worker(this.workerScript)
-      worker.on('message', (result) => {
-        const task = this.queue.shift()
-        if (task) {
-          task.resolve(result)
-          this.processQueue()
-        }
-      })
-      this.workers.push(worker)
-    }
-  }
-  
-  async execute(task: any): Promise<any> {
-    return new Promise((resolve, reject) => {
-      this.queue.push({ task, resolve, reject })
-      this.processQueue()
+  private evictLeastUseful() {
+    // 基于访问频率和最近访问时间的 LFU-LRU 混合策略
+    const entries = Array.from(this.accessPattern.entries())
+    entries.sort((a, b) => {
+      const scoreA = a[1].frequency * Math.exp(-(Date.now() - a[1].lastAccess) / 3600000)
+      const scoreB = b[1].frequency * Math.exp(-(Date.now() - b[1].lastAccess) / 3600000)
+      return scoreA - scoreB
+    })
+    
+    // 移除得分最低的条目
+    const toEvict = entries.slice(0, Math.floor(entries.length * 0.1))
+    toEvict.forEach(([key]) => {
+      this.cache.delete(key)
+      this.accessPattern.delete(key)
     })
   }
-  
-  private processQueue(): void {
-    if (this.queue.length === 0) return
-    
-    const availableWorker = this.workers.find(w => !w.busy)
-    if (availableWorker) {
-      const task = this.queue.shift()!
-      availableWorker.busy = true
-      availableWorker.postMessage(task.task)
-    }
-  }
 }
 ```
 
-### 7.2.3 内存优化
+## 🌍 生态建设建议
 
-**流式处理**：
+### 1. 插件生态
+
+**插件市场**
 ```typescript
-import { Transform } from 'stream'
+// 插件注册中心
+interface PluginRegistry {
+  search(query: string): Plugin[]
+  install(name: string, version?: string): Promise<void>
+  uninstall(name: string): Promise<void>
+  list(): InstalledPlugin[]
+}
 
-class StreamingTransformer extends Transform {
-  private buffer = ''
-  
-  _transform(chunk: any, encoding: string, callback: Function): void {
-    this.buffer += chunk.toString()
+class NPMPluginRegistry implements PluginRegistry {
+  async search(query: string): Plugin[] {
+    const response = await fetch(`https://registry.npmjs.org/-/v1/search?text=${query}+keywords:mini-vite-plugin`)
+    const data = await response.json()
     
-    // 按行处理，避免加载整个文件到内存
-    const lines = this.buffer.split('\n')
-    this.buffer = lines.pop() || '' // 保留不完整的行
-    
-    for (const line of lines) {
-      const transformed = this.transformLine(line)
-      this.push(transformed + '\n')
-    }
-    
-    callback()
+    return data.objects.map(pkg => ({
+      name: pkg.package.name,
+      description: pkg.package.description,
+      version: pkg.package.version,
+      author: pkg.package.author,
+      downloads: pkg.package.downloads
+    }))
   }
   
-  _flush(callback: Function): void {
-    if (this.buffer) {
-      const transformed = this.transformLine(this.buffer)
-      this.push(transformed)
-    }
-    callback()
-  }
-  
-  private transformLine(line: string): string {
-    // 行级转换逻辑
-    return line
+  async install(name: string, version = 'latest'): Promise<void> {
+    // 使用 npm/yarn/pnpm 安装插件
+    const packageManager = detectPackageManager()
+    await exec(`${packageManager} add ${name}@${version}`)
+    
+    // 自动添加到配置文件
+    await this.addToConfig(name)
   }
 }
 ```
 
-## 7.3 开发体验改进
-
-### 7.3.1 错误提示优化
-
-**友好的错误信息**：
-```typescript
-class EnhancedErrorReporter {
-  formatError(error: Error, context: ErrorContext): string {
-    const { file, line, column, code } = context
-    
-    let message = `${error.message}\n\n`
-    
-    if (file && line) {
-      message += `File: ${file}:${line}:${column}\n`
-      
-      if (code) {
-        const lines = code.split('\n')
-        const errorLine = lines[line - 1]
-        const prevLine = lines[line - 2]
-        const nextLine = lines[line]
-        
-        message += '\n'
-        if (prevLine) message += `${line - 1} | ${prevLine}\n`
-        message += `${line} | ${errorLine}\n`
-        message += `${' '.repeat(String(line).length)} | ${' '.repeat(column)}^\n`
-        if (nextLine) message += `${line + 1} | ${nextLine}\n`
-      }
-    }
-    
-    // 添加建议
-    const suggestions = this.getSuggestions(error, context)
-    if (suggestions.length > 0) {
-      message += '\nSuggestions:\n'
-      suggestions.forEach((suggestion, i) => {
-        message += `  ${i + 1}. ${suggestion}\n`
-      })
-    }
-    
-    return message
-  }
-  
-  private getSuggestions(error: Error, context: ErrorContext): string[] {
-    const suggestions: string[] = []
-    
-    if (error.message.includes('Cannot resolve module')) {
-      suggestions.push('Check if the module is installed: npm install <module>')
-      suggestions.push('Verify the import path is correct')
-      suggestions.push('Check if the file extension is needed')
-    }
-    
-    return suggestions
-  }
-}
-```
-
-### 7.3.2 调试工具集成
-
-**Source Map 增强**：
-```typescript
-export function enhancedSourceMapPlugin(): Plugin {
-  return {
-    name: 'enhanced-source-map',
-    transform(code, id) {
-      // 生成高质量的 Source Map
-      const map = generateSourceMap(code, id, {
-        includeContent: true,
-        includeNames: true,
-        hires: true,
-      })
-      
-      // 添加调试信息
-      const debugInfo = {
-        originalFile: id,
-        transformedAt: Date.now(),
-        transformChain: getTransformChain(id),
-      }
-      
-      return {
-        code,
-        map: enhanceSourceMap(map, debugInfo),
-      }
-    }
-  }
-}
-```
-
-### 7.3.3 开发工具集成
-
-**VS Code 扩展**：
-```typescript
-// vscode-extension/src/extension.ts
-import * as vscode from 'vscode'
-
-export function activate(context: vscode.ExtensionContext) {
-  // 注册命令
-  const startDevServer = vscode.commands.registerCommand(
-    'mini-vite.startDevServer',
-    async () => {
-      const terminal = vscode.window.createTerminal('Mini Vite Dev Server')
-      terminal.sendText('mini-vite dev')
-      terminal.show()
-    }
-  )
-  
-  // 注册语言服务
-  const provider = new MiniViteConfigProvider()
-  const selector: vscode.DocumentSelector = {
-    pattern: '**/mini-vite.config.{js,ts,mjs}',
-  }
-  
-  context.subscriptions.push(
-    startDevServer,
-    vscode.languages.registerCompletionItemProvider(selector, provider),
-    vscode.languages.registerHoverProvider(selector, provider)
-  )
-}
-```
-
-## 7.4 生态建设建议
-
-### 7.4.1 插件生态
-
-**官方插件库**：
-```
-@mini-vite/plugin-react      # React 支持
-@mini-vite/plugin-vue        # Vue 支持
-@mini-vite/plugin-svelte     # Svelte 支持
-@mini-vite/plugin-typescript # 增强 TypeScript 支持
-@mini-vite/plugin-postcss    # PostCSS 集成
-@mini-vite/plugin-sass       # Sass/SCSS 支持
-@mini-vite/plugin-eslint     # ESLint 集成
-@mini-vite/plugin-testing    # 测试工具集成
-```
-
-**插件开发工具**：
+**插件开发工具**
 ```typescript
 // 插件开发脚手架
-export function createPluginTemplate(name: string, options: TemplateOptions) {
-  return {
-    [`src/${name}.ts`]: generatePluginCode(name, options),
-    [`test/${name}.test.ts`]: generateTestCode(name),
-    'package.json': generatePackageJson(name),
-    'README.md': generateReadme(name, options),
-  }
+export function createPluginTemplate(name: string) {
+  const template = `
+import { Plugin } from 'mini-vite'
+
+export interface ${capitalize(name)}Options {
+  // 插件选项
 }
 
-// 插件测试工具
-export class PluginTester {
-  async testPlugin(plugin: Plugin, testCases: TestCase[]): Promise<TestResult[]> {
-    const results: TestResult[] = []
-    
-    for (const testCase of testCases) {
-      const result = await this.runTestCase(plugin, testCase)
-      results.push(result)
-    }
-    
-    return results
-  }
-}
-```
-
-### 7.4.2 社区建设
-
-**文档网站**：
-- 交互式教程
-- API 参考文档
-- 插件开发指南
-- 最佳实践案例
-- 社区贡献指南
-
-**开发者工具**：
-- 在线 Playground
-- 配置生成器
-- 性能分析工具
-- 插件市场
-
-### 7.4.3 企业级功能
-
-**微前端支持**：
-```typescript
-export function microfrontendPlugin(options: MicrofrontendOptions): Plugin {
+export function ${name}Plugin(options: ${capitalize(name)}Options = {}): Plugin {
   return {
-    name: 'microfrontend',
-    configureServer(server) {
-      // 配置模块联邦
-      server.middlewares.use('/mf', createModuleFederationMiddleware(options))
+    name: '${name}',
+    
+    configResolved(config) {
+      // 配置解析完成后的处理
     },
-    generateBundle(opts, bundle) {
-      // 生成微前端清单
-      generateMicrofrontendManifest(bundle, options)
+    
+    buildStart() {
+      // 构建开始时的处理
+    },
+    
+    resolveId(id: string, importer?: string) {
+      // 模块 ID 解析
+      return null
+    },
+    
+    load(id: string) {
+      // 模块加载
+      return null
+    },
+    
+    transform(code: string, id: string) {
+      // 代码转换
+      return null
+    },
+    
+    configureServer(server) {
+      // 配置开发服务器
+    },
+    
+    handleHotUpdate(ctx) {
+      // 处理热更新
     }
   }
 }
-```
 
-**多环境部署**：
-```typescript
-export function deploymentPlugin(environments: DeploymentConfig[]): Plugin {
+export default ${name}Plugin
+`
+  
   return {
-    name: 'deployment',
-    writeBundle() {
-      // 为不同环境生成部署配置
-      environments.forEach(env => {
-        generateDeploymentConfig(env)
-      })
+    [`src/index.ts`]: template,
+    [`package.json`]: JSON.stringify({
+      name: `mini-vite-plugin-${name}`,
+      version: '1.0.0',
+      main: 'dist/index.js',
+      types: 'dist/index.d.ts',
+      keywords: ['mini-vite-plugin', name],
+      peerDependencies: {
+        'mini-vite': '^1.0.0'
+      }
+    }, null, 2),
+    [`tsconfig.json`]: JSON.stringify({
+      extends: '@mini-vite/tsconfig',
+      include: ['src/**/*']
+    }, null, 2)
+  }
+}
+```
+
+### 2. 开发者工具
+
+**VS Code 扩展**
+```json
+{
+  "name": "mini-vite-tools",
+  "displayName": "Mini Vite Tools",
+  "description": "Development tools for Mini Vite",
+  "version": "1.0.0",
+  "engines": {
+    "vscode": "^1.60.0"
+  },
+  "categories": ["Other"],
+  "activationEvents": [
+    "workspaceContains:mini-vite.config.*"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "miniVite.startDevServer",
+        "title": "Start Dev Server",
+        "category": "Mini Vite"
+      },
+      {
+        "command": "miniVite.build",
+        "title": "Build for Production",
+        "category": "Mini Vite"
+      }
+    ],
+    "configuration": {
+      "title": "Mini Vite",
+      "properties": {
+        "miniVite.autoStart": {
+          "type": "boolean",
+          "default": false,
+          "description": "Automatically start dev server when opening project"
+        }
+      }
     }
   }
 }
 ```
 
-## 7.5 长期发展规划
+**浏览器开发者工具**
+```typescript
+// Chrome DevTools 扩展
+class MiniViteDevTools {
+  constructor() {
+    this.setupPanel()
+    this.connectToDevServer()
+  }
+  
+  setupPanel() {
+    chrome.devtools.panels.create(
+      'Mini Vite',
+      'icon.png',
+      'panel.html',
+      (panel) => {
+        panel.onShown.addListener(this.onPanelShown.bind(this))
+      }
+    )
+  }
+  
+  connectToDevServer() {
+    // 连接到开发服务器的调试端点
+    this.ws = new WebSocket('ws://localhost:3001/__devtools')
+    
+    this.ws.onmessage = (event) => {
+      const data = JSON.parse(event.data)
+      this.handleDevServerMessage(data)
+    }
+  }
+  
+  handleDevServerMessage(data) {
+    switch (data.type) {
+      case 'module-update':
+        this.updateModuleGraph(data.modules)
+        break
+      case 'performance-metrics':
+        this.updatePerformancePanel(data.metrics)
+        break
+      case 'build-progress':
+        this.updateBuildProgress(data.progress)
+        break
+    }
+  }
+}
+```
 
-### 阶段 1：核心功能完善（3-6 个月）
-- 完善现有功能的稳定性
-- 添加更多文件类型支持
-- 优化性能和内存使用
-- 完善文档和示例
+## 🔮 未来发展规划
 
-### 阶段 2：生态建设（6-12 个月）
-- 开发官方插件库
-- 建设社区和文档网站
-- 集成主流开发工具
-- 建立插件开发规范
+### 短期目标 (3-6 个月)
 
-### 阶段 3：企业级功能（12-18 个月）
-- 微前端支持
-- 大型项目优化
-- 企业级安全功能
-- 云原生部署支持
+1. **核心功能完善**
+   - [ ] 完善 HMR 系统
+   - [ ] 优化构建性能
+   - [ ] 增强错误处理
+   - [ ] 完善测试覆盖
 
-### 阶段 4：创新功能（18+ 个月）
-- AI 辅助优化
-- 边缘计算支持
-- WebAssembly 集成
-- 下一代 Web 标准支持
+2. **生态建设**
+   - [ ] 发布到 npm
+   - [ ] 编写详细文档
+   - [ ] 创建示例项目
+   - [ ] 建立社区
 
-这些扩展方向和改进建议为 Mini Vite 的未来发展提供了清晰的路线图，既保持了工具的简洁性，又为功能扩展留下了充足的空间。
+### 中期目标 (6-12 个月)
+
+1. **功能扩展**
+   - [ ] Vue/React 官方支持
+   - [ ] CSS 预处理器集成
+   - [ ] 更多构建优化
+   - [ ] 插件生态建设
+
+2. **工具链完善**
+   - [ ] VS Code 扩展
+   - [ ] CLI 工具增强
+   - [ ] 调试工具
+   - [ ] 性能分析工具
+
+### 长期目标 (1-2 年)
+
+1. **企业级特性**
+   - [ ] 微前端支持
+   - [ ] 多环境部署
+   - [ ] CI/CD 集成
+   - [ ] 监控和分析
+
+2. **技术创新**
+   - [ ] WebAssembly 集成
+   - [ ] HTTP/3 支持
+   - [ ] Edge Computing 优化
+   - [ ] AI 辅助优化
+
+## 🎯 贡献指南
+
+### 如何参与
+
+1. **代码贡献**
+   - Fork 项目仓库
+   - 创建功能分支
+   - 编写测试用例
+   - 提交 Pull Request
+
+2. **文档贡献**
+   - 改进现有文档
+   - 翻译文档
+   - 编写教程
+   - 录制视频
+
+3. **社区建设**
+   - 回答问题
+   - 分享经验
+   - 组织活动
+   - 推广项目
+
+### 开发规范
+
+```typescript
+// 代码风格
+export interface ContributionGuidelines {
+  codeStyle: {
+    formatter: 'prettier'
+    linter: 'eslint'
+    typescript: 'strict'
+  }
+  
+  testing: {
+    coverage: '>= 80%'
+    unitTests: 'required'
+    integrationTests: 'recommended'
+  }
+  
+  documentation: {
+    apiDocs: 'required'
+    examples: 'required'
+    changelog: 'required'
+  }
+  
+  git: {
+    commitMessage: 'conventional-commits'
+    branchNaming: 'feature/fix/docs/...'
+    pullRequest: 'template-required'
+  }
+}
+```
+
+## 🎉 结语
+
+Mini Vite 项目为我们提供了一个完整的现代构建工具开发体验。通过这个项目，我们不仅学习了：
+
+- **核心技术**: ES 模块、HMR、插件系统
+- **架构设计**: 模块化、可扩展、高性能
+- **工程实践**: 测试、调试、优化、文档
+
+更重要的是，我们掌握了**系统性思考**和**问题解决**的能力。
+
+### 持续学习建议
+
+1. **深入理解底层技术**: 继续学习 Node.js、浏览器原理
+2. **关注技术发展**: 跟进前端构建工具的最新发展
+3. **实践项目**: 在实际项目中应用所学知识
+4. **分享交流**: 与社区分享经验，获得反馈
+
+### 最后的话
+
+构建工具开发是一个充满挑战和乐趣的领域。希望通过这个学习文档，您能够：
+
+- 🎯 **掌握核心技能**: 具备开发现代构建工具的能力
+- 🚀 **提升技术视野**: 理解前端工程化的本质
+- 💡 **激发创新思维**: 能够设计和实现创新的解决方案
+- 🤝 **参与开源社区**: 为前端生态贡献自己的力量
+
+让我们一起推动前端构建工具的发展，创造更好的开发体验！🌟
+
+---
+
+**感谢您完成了这个完整的学习之旅！** 🎊
+
+如果您有任何问题或建议，欢迎通过以下方式联系：
+- GitHub Issues
+- 社区论坛
+- 技术交流群
+
+祝您在前端开发的道路上越走越远！🚀
